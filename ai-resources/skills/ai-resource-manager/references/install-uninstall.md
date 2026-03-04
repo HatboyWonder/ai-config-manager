@@ -256,7 +256,7 @@ Install from [GitHub releases](https://github.com/hk9890/ai-config-manager/relea
 or build from source:
 
 ```bash
-go install github.com/hk9890/ai-config-manager@latest
+go install github.com/hk9890/ai-config-manager/cmd/aimgr@latest
 ```
 
 Ensure `~/go/bin` or `~/.local/bin` is in your `PATH`.

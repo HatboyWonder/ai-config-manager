@@ -28,7 +28,7 @@ dist/
 coverage.out
 
 # Binary names
-aimgr
+/aimgr
 ai-repo-test
 
 # Go dependency management

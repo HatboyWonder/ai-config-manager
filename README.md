@@ -43,7 +43,7 @@ A command-line tool for discovering, installing, and managing AI resources (comm
 The easiest way to install `aimgr` is using Go:
 
 ```bash
-go install github.com/hk9890/ai-config-manager@latest
+go install github.com/hk9890/ai-config-manager/cmd/aimgr@latest
 ```
 
 ### From Source

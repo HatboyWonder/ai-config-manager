@@ -33,7 +33,7 @@ Manage AI resources via `aimgr`. Resources live in `~/.local/share/ai-config/rep
 | Issue | Fix |
 |-------|-----|
 | Skills not loading | Restart AI tool |
-| `aimgr` not found | `go install github.com/hk9890/ai-config-manager@latest` |
+| `aimgr` not found | `go install github.com/hk9890/ai-config-manager/cmd/aimgr@latest` |
 | Resource not found | `aimgr repo sync` |
 | Broken symlinks | `aimgr repair` or `aimgr repo repair` |
 
