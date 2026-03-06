@@ -49,3 +49,7 @@ test/e2e/configs/*.local.yaml
 # Log files
 logs/
 *.log
+
+# Dolt database files (added by bd init)
+.dolt/
+*.db
