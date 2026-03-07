@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"github.com/dynatrace-oss/ai-config-manager/v3/pkg/discovery"
 	resmeta "github.com/dynatrace-oss/ai-config-manager/v3/pkg/metadata"
 	"github.com/dynatrace-oss/ai-config-manager/v3/pkg/modifications"
+	"github.com/dynatrace-oss/ai-config-manager/v3/pkg/output"
 	"github.com/dynatrace-oss/ai-config-manager/v3/pkg/pattern"
 	"github.com/dynatrace-oss/ai-config-manager/v3/pkg/repo"
 	"github.com/dynatrace-oss/ai-config-manager/v3/pkg/repomanifest"
@@ -19,6 +21,8 @@ import (
 	"github.com/dynatrace-oss/ai-config-manager/v3/pkg/source"
 	"github.com/dynatrace-oss/ai-config-manager/v3/pkg/sourcemetadata"
 	"github.com/dynatrace-oss/ai-config-manager/v3/pkg/workspace"
+	"gopkg.in/yaml.v3"
+
 	"github.com/spf13/cobra"
 )
 
@@ -26,6 +30,62 @@ import (
 type resourceInfo struct {
 	Name string
 	Type resource.ResourceType
+}
+
+// sourceSyncResult holds the result for one source.
+type sourceSyncResult struct {
+	Name         string                      `json:"name"`
+	URL          string                      `json:"url,omitempty"`
+	Path         string                      `json:"path,omitempty"`
+	Mode         string                      `json:"mode"` // "remote" or "local"
+	Result       *output.BulkOperationResult `json:"result"`
+	RemovedCount int                         `json:"removed_count"`
+	Error        string                      `json:"error,omitempty"`
+	Failed       bool                        `json:"failed"`
+}
+
+// removedResource describes a resource that was removed during sync.
+type removedResource struct {
+	Name   string `json:"name"`
+	Type   string `json:"type"`
+	Source string `json:"source"`
+}
+
+type workspaceManager interface {
+	GetOrClone(url string, ref string) (string, error)
+	Update(url string, ref string) error
+}
+
+// syncSummary holds aggregate counts for the sync operation.
+type syncSummary struct {
+	SourcesTotal     int `json:"sources_total"`
+	SourcesSynced    int `json:"sources_synced"`
+	SourcesFailed    int `json:"sources_failed"`
+	ResourcesAdded   int `json:"resources_added"`
+	ResourcesUpdated int `json:"resources_updated"`
+	ResourcesRemoved int `json:"resources_removed"`
+	ResourcesFailed  int `json:"resources_failed"`
+}
+
+// syncOutput is the complete sync output, used for JSON/YAML formatting.
+type syncOutput struct {
+	Sources  []sourceSyncResult `json:"sources"`
+	Removed  []removedResource  `json:"removed"`
+	Summary  syncSummary        `json:"summary"`
+	Warnings []string           `json:"warnings,omitempty"`
+}
+
+type syncOutputMode struct {
+	format  output.Format
+	verbose bool
+}
+
+func (m syncOutputMode) human() bool {
+	return m.format == output.Table
+}
+
+func (m syncOutputMode) detailed() bool {
+	return m.format == output.Table && m.verbose
 }
 
 // collectResourcesBySource returns a map of source identifier -> []resourceInfo
@@ -119,6 +179,7 @@ var (
 	syncDryRunFlag       bool
 	syncFormatFlag       string
 	syncForceFlag        bool
+	syncVerboseFlag      bool
 )
 
 // syncCmd represents the sync command
@@ -176,6 +237,7 @@ func init() {
 	syncCmd.Flags().BoolVar(&syncDryRunFlag, "dry-run", false, "Preview without importing")
 	syncCmd.Flags().BoolVar(&syncForceFlag, "force", false, "Overwrite existing resources (default: true)")
 	syncCmd.Flags().StringVar(&syncFormatFlag, "format", "table", "Output format: table, json, yaml")
+	syncCmd.Flags().BoolVarP(&syncVerboseFlag, "verbose", "v", false, "Show full per-resource tables (table format only)")
 	_ = syncCmd.RegisterFlagCompletionFunc("format", completeFormatFlag)
 }
 
@@ -241,15 +303,33 @@ func scanSourceResources(sourcePath string) (map[resource.ResourceType]map[strin
 	return result, nil
 }
 
+func prepareRemoteSourcePath(wsMgr workspaceManager, cloneURL string, ref string) (string, error) {
+	sourcePath, err := wsMgr.GetOrClone(cloneURL, ref)
+	if err != nil {
+		return "", fmt.Errorf("failed to download repository: %w", err)
+	}
+
+	// Remote sync must refresh an existing cache before importing resources.
+	// Unlike repo add, sync should not silently proceed from stale cached content.
+	if err := wsMgr.Update(cloneURL, ref); err != nil {
+		return "", fmt.Errorf("failed to update cached repository: %w", err)
+	}
+
+	return sourcePath, nil
+}
+
 // syncSource syncs resources from a single manifest source.
-// Returns the resolved source path (for use in post-sync scanning) and any error.
-func syncSource(src *repomanifest.Source, manager *repo.Manager) (string, error) {
+// Returns the resolved source path (for use in post-sync scanning), the bulk result, and any error.
+// When syncSilentMode is true, "Mode: Remote/Local" lines are suppressed.
+func syncSource(src *repomanifest.Source, manager *repo.Manager) (string, *output.BulkOperationResult, error) {
 	var sourcePath string
 	var mode string
 
 	if src.URL != "" {
 		// Remote source (url): download to workspace, copy to repo
-		fmt.Printf("  Mode: Remote (download + copy)\n")
+		if !syncSilentMode {
+			fmt.Printf("  Mode: Remote (download + copy)\n")
+		}
 		mode = "copy"
 
 		// Get repository path
@@ -258,7 +338,7 @@ func syncSource(src *repomanifest.Source, manager *repo.Manager) (string, error)
 		// Create workspace manager
 		wsMgr, err := workspace.NewManager(repoPath)
 		if err != nil {
-			return "", fmt.Errorf("failed to create workspace manager: %w", err)
+			return "", nil, fmt.Errorf("failed to create workspace manager: %w", err)
 		}
 
 		// Parse source URL to get clone URL
@@ -273,19 +353,19 @@ func syncSource(src *repomanifest.Source, manager *repo.Manager) (string, error)
 
 		parsed, err := source.ParseSource(sourceStr)
 		if err != nil {
-			return "", fmt.Errorf("invalid source URL: %w", err)
+			return "", nil, fmt.Errorf("invalid source URL: %w", err)
 		}
 
 		// Get clone URL
 		cloneURL, err := source.GetCloneURL(parsed)
 		if err != nil {
-			return "", fmt.Errorf("failed to get clone URL: %w", err)
+			return "", nil, fmt.Errorf("failed to get clone URL: %w", err)
 		}
 
-		// Get or clone repository (using ref if available)
-		sourcePath, err = wsMgr.GetOrClone(cloneURL, src.Ref)
+		// Get or clone repository, then refresh it before importing.
+		sourcePath, err = prepareRemoteSourcePath(wsMgr, cloneURL, src.Ref)
 		if err != nil {
-			return "", fmt.Errorf("failed to download repository: %w", err)
+			return "", nil, err
 		}
 
 		// Apply subpath if specified
@@ -295,27 +375,38 @@ func syncSource(src *repomanifest.Source, manager *repo.Manager) (string, error)
 
 	} else if src.Path != "" {
 		// Local source (path): use path directly, symlink to repo
-		fmt.Printf("  Mode: Local (symlink)\n")
+		if !syncSilentMode {
+			fmt.Printf("  Mode: Local (symlink)\n")
+		}
 		mode = src.GetMode() // Use mode from source (implicit: path=symlink, url=copy)
 
 		// Convert to absolute path
 		absPath, err := filepath.Abs(src.Path)
 		if err != nil {
-			return "", fmt.Errorf("invalid path %s: %w", src.Path, err)
+			return "", nil, fmt.Errorf("invalid path %s: %w", src.Path, err)
 		}
 		sourcePath = absPath
 	} else {
-		return "", fmt.Errorf("source must have either URL or Path")
+		return "", nil, fmt.Errorf("source must have either URL or Path")
 	}
 
 	// Import from source path with appropriate mode
 	// Pass src.Include as the filter: only matching resources will be imported.
 	// Empty include (nil/[]) means import everything (backward compatible).
-	err := addBulkFromLocalWithMode(sourcePath, manager, src.Include, src.ID, mode, src.Name)
-	if err != nil {
-		return "", err
+	var sourceURL string
+	var sourceType string
+	if src.URL != "" {
+		sourceURL = src.URL
+		sourceType = "github"
+	} else {
+		sourceURL = "file://" + sourcePath
+		sourceType = string(source.Local)
 	}
-	return sourcePath, nil
+	bulkResult, err := importFromLocalPathWithMode(sourcePath, manager, src.Include, sourceURL, sourceType, src.Ref, mode, src.Name, src.ID)
+	if err != nil {
+		return "", bulkResult, err
+	}
+	return sourcePath, bulkResult, nil
 }
 
 // syncResult tracks the outcome of processing all sources.
@@ -329,7 +420,7 @@ type syncResult struct {
 // detectRemovedForSource compares a source's pre-sync resource inventory with the
 // current source contents to identify resources that were removed from the source.
 func detectRemovedForSource(src *repomanifest.Source, sourcePath, repoPath string,
-	preSyncResources map[string][]resourceInfo) []resourceInfo {
+	preSyncResources map[string][]resourceInfo) ([]resourceInfo, []string) {
 
 	sourceKey := src.ID
 	if sourceKey == "" {
@@ -338,13 +429,12 @@ func detectRemovedForSource(src *repomanifest.Source, sourcePath, repoPath strin
 
 	preSyncSet := preSyncResources[sourceKey]
 	if len(preSyncSet) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	sourceResources, scanErr := scanSourceResources(sourcePath)
 	if scanErr != nil {
-		fmt.Fprintf(os.Stderr, "  Warning: could not scan source for removal detection: %v\n", scanErr)
-		return nil
+		return nil, []string{fmt.Sprintf("could not scan source %s for removal detection: %v", src.Name, scanErr)}
 	}
 
 	// Apply include filter to source resources: if include patterns are set, only
@@ -375,6 +465,7 @@ func detectRemovedForSource(src *repomanifest.Source, sourcePath, repoPath strin
 	}
 
 	var removed []resourceInfo
+	var warnings []string
 	for _, res := range preSyncSet {
 		// Check if this resource still exists in the source
 		if typeSet, ok := sourceResources[res.Type]; ok {
@@ -388,58 +479,68 @@ func detectRemovedForSource(src *repomanifest.Source, sourcePath, repoPath strin
 		// overwrote this resource during sync, its metadata now
 		// points to the other source — skip removal in that case.
 		if !resmeta.HasSource(res.Name, res.Type, sourceKey, repoPath) {
-			fmt.Fprintf(os.Stderr, "  ⚠ Skipping removal of %s/%s: metadata now points to a different source (name collision)\n",
-				res.Type, res.Name)
+			warnings = append(warnings,
+				fmt.Sprintf("skipping removal of %s/%s from %s: metadata now points to a different source", res.Type, res.Name, src.Name),
+			)
 			continue
 		}
 
 		// Resource was in repo but not in source -> removed
 		removed = append(removed, res)
 	}
-	return removed
+	return removed, warnings
 }
 
 // removeOrphanedResources removes resources that are no longer present in their sources,
-// or prints a dry-run preview. Returns the number of resources actually removed.
-func removeOrphanedResources(manager *repo.Manager, removedResources map[string][]resourceInfo) int {
+// or prints a dry-run preview. Returns the list of successfully removed resources.
+func removeOrphanedResources(manager *repo.Manager, removedResources map[string][]resourceInfo, mode syncOutputMode) ([]removedResource, []string) {
 	totalToRemove := 0
 	for _, resources := range removedResources {
 		totalToRemove += len(resources)
 	}
 
 	if totalToRemove == 0 {
-		return 0
+		return nil, nil
 	}
 
-	// Warn about breaking project symlinks before removing (bmz1.3)
-	fmt.Fprintf(os.Stderr, "\n⚠ Removed resources may have active project installations.\n")
-	fmt.Fprintf(os.Stderr, "  Run 'aimgr repair' in affected projects to clean up broken symlinks.\n\n")
+	warnings := []string{"removed resources may have active project installations; run 'aimgr repair' in affected projects if needed"}
 
 	if syncDryRunFlag {
-		fmt.Printf("\nWould remove %d resource(s) no longer in sources:\n", totalToRemove)
-		for sourceKey, resources := range removedResources {
-			for _, res := range resources {
-				fmt.Printf("  - %s/%s (from %s)\n", res.Type, res.Name, sourceKey)
+		if mode.detailed() {
+			fmt.Printf("\nWould remove %d resource(s) no longer in sources:\n", totalToRemove)
+			for sourceKey, resources := range removedResources {
+				for _, res := range resources {
+					fmt.Printf("  - %s/%s (from %s)\n", res.Type, res.Name, sourceKey)
+				}
 			}
 		}
-		return 0
+		return nil, warnings
 	}
 
-	fmt.Printf("Removing %d resource(s) no longer in sources:\n", totalToRemove)
-	removeCount := 0
+	if mode.detailed() {
+		fmt.Printf("Removing %d resource(s) no longer in sources:\n", totalToRemove)
+	}
+	var removed []removedResource
 	for sourceKey, resources := range removedResources {
 		for _, res := range resources {
-			fmt.Printf("  - %s/%s (from %s)\n", res.Type, res.Name, sourceKey)
+			if mode.detailed() {
+				fmt.Printf("  - %s/%s (from %s)\n", res.Type, res.Name, sourceKey)
+			}
 			if err := manager.Remove(res.Name, res.Type); err != nil {
-				fmt.Fprintf(os.Stderr, "  ⚠ Warning: failed to remove %s/%s: %v\n",
-					res.Type, res.Name, err)
+				warnings = append(warnings, fmt.Sprintf("failed to remove %s/%s from %s: %v", res.Type, res.Name, sourceKey, err))
 			} else {
-				removeCount++
+				removed = append(removed, removedResource{
+					Name:   res.Name,
+					Type:   string(res.Type),
+					Source: sourceKey,
+				})
 			}
 		}
 	}
-	fmt.Printf("✓ Removed %d resource(s)\n", removeCount)
-	return removeCount
+	if mode.detailed() {
+		fmt.Printf("✓ Removed %d resource(s)\n", len(removed))
+	}
+	return removed, warnings
 }
 
 // syncRegenerateModifications regenerates resource modifications based on current config.
@@ -482,16 +583,82 @@ func syncRegenerateModifications(manager *repo.Manager, repoPath string) {
 }
 
 // syncSaveMetadata saves updated source metadata and commits the changes.
-func syncSaveMetadata(manager *repo.Manager, metadata *sourcemetadata.SourceMetadata) {
+func syncSaveMetadata(manager *repo.Manager, metadata *sourcemetadata.SourceMetadata) []string {
 	if err := metadata.Save(manager.GetRepoPath()); err != nil {
-		fmt.Printf("⚠ Warning: Failed to save metadata: %v\n", err)
-		return
+		return []string{fmt.Sprintf("failed to save metadata: %v", err)}
 	}
 	// Commit metadata changes to git
 	if err := manager.CommitChanges("aimgr: update sync timestamps"); err != nil {
 		// Don't fail if commit fails (e.g., not a git repo)
-		fmt.Printf("⚠ Warning: Failed to commit metadata: %v\n", err)
+		return []string{fmt.Sprintf("failed to commit metadata: %v", err)}
 	}
+
+	return nil
+}
+
+// printSyncOutputTable prints compact table output (one line per source) plus summary.
+// When verbose is true, it also prints full per-resource tables for each source.
+func printSyncOutputTable(so *syncOutput, verbose bool) {
+	fmt.Printf("Syncing from %d configured source(s)...\n\n", so.Summary.SourcesTotal)
+
+	for _, src := range so.Sources {
+		modeLabel := src.Mode
+		if src.Failed {
+			fmt.Printf("  ✗ %-30s — error: %s\n", fmt.Sprintf("%s (%s)", src.Name, modeLabel), src.Error)
+		} else {
+			var added, updated int
+			if src.Result != nil {
+				added = len(src.Result.Added)
+				updated = len(src.Result.Updated)
+			}
+
+			counts := []string{
+				fmt.Sprintf("%d added", added),
+				fmt.Sprintf("%d updated", updated),
+			}
+			if src.RemovedCount > 0 {
+				counts = append(counts, fmt.Sprintf("%d removed", src.RemovedCount))
+			}
+
+			fmt.Printf("  ✓ %-30s — %s\n",
+				fmt.Sprintf("%s (%s)", src.Name, modeLabel), strings.Join(counts, ", "))
+		}
+
+		if verbose && !src.Failed && src.Result != nil {
+			fmt.Println()
+			if err := output.FormatBulkResult(src.Result, output.Table); err != nil {
+				fmt.Fprintf(os.Stderr, "  Warning: failed to format result for %s: %v\n", src.Name, err)
+			}
+		}
+	}
+
+	fmt.Printf("\nSync complete: %d/%d sources, %d resources synced, %d removed\n",
+		so.Summary.SourcesSynced,
+		so.Summary.SourcesTotal,
+		so.Summary.ResourcesAdded+so.Summary.ResourcesUpdated,
+		so.Summary.ResourcesRemoved,
+	)
+
+	if so.Summary.SourcesFailed > 0 {
+		var failedNames []string
+		for _, src := range so.Sources {
+			if src.Failed {
+				failedNames = append(failedNames, src.Name)
+			}
+		}
+		fmt.Printf("  %d source(s) failed: %s\n", so.Summary.SourcesFailed, strings.Join(failedNames, ", "))
+	}
+	if len(so.Warnings) > 0 {
+		if verbose {
+			fmt.Printf("  warnings (%d):\n", len(so.Warnings))
+			for _, warning := range so.Warnings {
+				fmt.Printf("    - %s\n", warning)
+			}
+		} else {
+			fmt.Printf("  warnings: %d (run with --verbose for details)\n", len(so.Warnings))
+		}
+	}
+	fmt.Println()
 }
 
 // runSync executes the sync command
@@ -523,24 +690,27 @@ func runSync(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Print header
-	fmt.Printf("Syncing from %d configured source(s)...\n", len(manifest.Sources))
-	if syncDryRunFlag {
-		fmt.Println("Mode: DRY RUN (preview only)")
+	// Determine output format
+	format, formatErr := output.ParseFormat(syncFormatFlag)
+	if formatErr != nil {
+		return formatErr
 	}
-	fmt.Println()
+	mode := syncOutputMode{format: format, verbose: syncVerboseFlag}
 
 	// Set flags for the duration of the sync operation
 	originalForceFlag := forceFlag
 	originalDryRunFlag := dryRunFlag
 	originalSkipExistingFlag := skipExistingFlag
 	originalAddFormatFlag := addFormatFlag
+	originalSyncSilentMode := syncSilentMode
 
 	// Default to force=true unless --skip-existing specified
 	forceFlag = !syncSkipExistingFlag
 	skipExistingFlag = syncSkipExistingFlag
 	dryRunFlag = syncDryRunFlag
 	addFormatFlag = syncFormatFlag
+	// Enable silent mode: suppress inline output from importFromLocalPathWithMode
+	syncSilentMode = true
 
 	// Restore original flags when done
 	defer func() {
@@ -548,39 +718,49 @@ func runSync(cmd *cobra.Command, args []string) error {
 		dryRunFlag = originalDryRunFlag
 		skipExistingFlag = originalSkipExistingFlag
 		addFormatFlag = originalAddFormatFlag
+		syncSilentMode = originalSyncSilentMode
 	}()
 
 	// Collect pre-sync inventory for orphan detection (bmz1.1)
 	repoPath := manager.GetRepoPath()
+	var warnings []string
 	preSyncResources, err := collectResourcesBySource(repoPath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: could not collect pre-sync inventory: %v\n", err)
+		warnings = append(warnings, fmt.Sprintf("could not collect pre-sync inventory: %v", err))
 		preSyncResources = make(map[string][]resourceInfo)
 	}
 
-	result := syncResult{
+	internalResult := syncResult{
 		failedSources:    make([]string, 0),
 		removedResources: make(map[string][]resourceInfo),
 	}
 
+	// Collect per-source results
+	var sourceResults []sourceSyncResult
+
 	// Process each source
-	for i, src := range manifest.Sources {
-		sourceDesc := src.Name
+	for _, src := range manifest.Sources {
+		sr := sourceSyncResult{
+			Name: src.Name,
+		}
 		if src.URL != "" {
-			sourceDesc = fmt.Sprintf("%s (%s)", src.Name, src.URL)
-		} else if src.Path != "" {
-			sourceDesc = fmt.Sprintf("%s (%s)", src.Name, src.Path)
+			sr.URL = src.URL
+			sr.Mode = "remote"
+		} else {
+			sr.Path = src.Path
+			sr.Mode = "local"
 		}
 
-		fmt.Printf("[%d/%d] Processing: %s\n", i+1, len(manifest.Sources), sourceDesc)
-
 		// Sync this source (returns resolved source path for scanning)
-		sourcePath, syncErr := syncSource(src, manager)
+		sourcePath, bulkResult, syncErr := syncSource(src, manager)
+		sr.Result = bulkResult
+
 		if syncErr != nil {
-			fmt.Printf("  ⚠ Warning: %v\n", syncErr)
-			fmt.Printf("  Skipping this source and continuing...\n\n")
-			result.sourcesFailed++
-			result.failedSources = append(result.failedSources, src.Name)
+			sr.Failed = true
+			sr.Error = syncErr.Error()
+			internalResult.sourcesFailed++
+			internalResult.failedSources = append(internalResult.failedSources, src.Name)
+			sourceResults = append(sourceResults, sr)
 			continue
 		}
 
@@ -589,9 +769,12 @@ func runSync(cmd *cobra.Command, args []string) error {
 		if sourceKey == "" {
 			sourceKey = src.Name
 		}
-		if removed := detectRemovedForSource(src, sourcePath, repoPath, preSyncResources); len(removed) > 0 {
-			result.removedResources[sourceKey] = removed
+		removed, detectWarnings := detectRemovedForSource(src, sourcePath, repoPath, preSyncResources)
+		if len(removed) > 0 {
+			internalResult.removedResources[sourceKey] = removed
+			sr.RemovedCount = len(removed)
 		}
+		warnings = append(warnings, detectWarnings...)
 
 		// Update last_synced timestamp in metadata after successful sync
 		if !syncDryRunFlag {
@@ -609,29 +792,62 @@ func runSync(cmd *cobra.Command, args []string) error {
 			}
 		}
 
-		result.sourcesProcessed++
-		fmt.Println()
+		internalResult.sourcesProcessed++
+		sourceResults = append(sourceResults, sr)
 	}
 
 	// Save updated metadata with new timestamps
-	if !syncDryRunFlag && result.sourcesProcessed > 0 {
-		syncSaveMetadata(manager, metadata)
+	if !syncDryRunFlag && internalResult.sourcesProcessed > 0 {
+		warnings = append(warnings, syncSaveMetadata(manager, metadata)...)
 	}
 
 	// Remove orphaned resources (bmz1.3)
-	removeCount := removeOrphanedResources(manager, result.removedResources)
+	removed, removalWarnings := removeOrphanedResources(manager, internalResult.removedResources, mode)
+	warnings = append(warnings, removalWarnings...)
 
-	// Print overall summary
-	fmt.Println("═══════════════════════════════════════════════════════════")
-	fmt.Printf("Sync Complete: %d/%d sources synced, %d resource(s) removed\n",
-		result.sourcesProcessed, len(manifest.Sources), removeCount)
-	if result.sourcesFailed > 0 {
-		fmt.Printf("  %d source(s) failed or skipped:\n", result.sourcesFailed)
-		for _, name := range result.failedSources {
-			fmt.Printf("    - %s\n", name)
+	// Build the complete sync output struct
+	summary := syncSummary{
+		SourcesTotal:  len(manifest.Sources),
+		SourcesSynced: internalResult.sourcesProcessed,
+		SourcesFailed: internalResult.sourcesFailed,
+	}
+	for _, sr := range sourceResults {
+		if sr.Result != nil {
+			summary.ResourcesAdded += len(sr.Result.Added)
+			summary.ResourcesUpdated += len(sr.Result.Updated)
+			summary.ResourcesFailed += len(sr.Result.Failed)
 		}
 	}
-	fmt.Println()
+	summary.ResourcesRemoved = len(removed)
+
+	so := &syncOutput{
+		Sources:  sourceResults,
+		Removed:  removed,
+		Summary:  summary,
+		Warnings: warnings,
+	}
+	if so.Removed == nil {
+		so.Removed = []removedResource{}
+	}
+
+	// Format and print output
+	switch format {
+	case output.JSON:
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(so); err != nil {
+			return fmt.Errorf("failed to encode JSON output: %w", err)
+		}
+	case output.YAML:
+		enc := yaml.NewEncoder(os.Stdout)
+		enc.SetIndent(2)
+		defer func() { _ = enc.Close() }()
+		if err := enc.Encode(so); err != nil {
+			return fmt.Errorf("failed to encode YAML output: %w", err)
+		}
+	default: // table
+		printSyncOutputTable(so, syncVerboseFlag)
+	}
 
 	// Regenerate modifications (skip in dry-run mode)
 	if !syncDryRunFlag {
@@ -639,7 +855,7 @@ func runSync(cmd *cobra.Command, args []string) error {
 	}
 
 	// Return error if all sources failed
-	if result.sourcesFailed == len(manifest.Sources) {
+	if internalResult.sourcesFailed == len(manifest.Sources) {
 		return fmt.Errorf("all sources failed to sync")
 	}
 

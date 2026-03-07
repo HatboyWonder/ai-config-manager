@@ -29,6 +29,10 @@ var (
 	filterFlags      []string
 	addFormatFlag    string
 	nameFlag         string
+
+	// syncSilentMode suppresses all fmt.Printf output in importFromLocalPathWithMode
+	// and printImportResults. Set to true by runSync() to collect results silently.
+	syncSilentMode bool
 )
 
 // repoAddCmd represents the add command
@@ -374,10 +378,13 @@ func importFromLocalPath(
 	sourceType string, // "local", "github", "git-url", "test"
 	ref string, // Git ref (empty for local/test)
 ) error {
-	return importFromLocalPathWithMode(localPath, manager, filter, sourceURL, sourceType, ref, "copy", "", "")
+	_, err := importFromLocalPathWithMode(localPath, manager, filter, sourceURL, sourceType, ref, "copy", "", "")
+	return err
 }
 
 // importFromLocalPathWithMode is the same as importFromLocalPath but allows specifying import mode.
+// It returns the BulkOperationResult for the caller to handle. When syncSilentMode is true,
+// all progress/result output is suppressed so the caller (runSync) can format it uniformly.
 //
 //nolint:gocyclo // Multi-phase import pipeline (discover, filter, import, metadata, git) that must stay cohesive for correctness.
 func importFromLocalPathWithMode(
@@ -390,26 +397,26 @@ func importFromLocalPathWithMode(
 	importMode string, // "copy" or "symlink"
 	sourceName string, // Explicit source name from manifest (empty = derive from URL)
 	sourceID string, // Source ID for metadata tracking (empty = none)
-) error {
+) (*output.BulkOperationResult, error) {
 	// Discover all resources (with error collection)
 	commands, commandErrors, err := discovery.DiscoverCommandsWithErrors(localPath, "")
 	if err != nil {
-		return fmt.Errorf("failed to discover commands: %w", err)
+		return nil, fmt.Errorf("failed to discover commands: %w", err)
 	}
 
 	skills, skillErrors, err := discovery.DiscoverSkillsWithErrors(localPath, "")
 	if err != nil {
-		return fmt.Errorf("failed to discover skills: %w", err)
+		return nil, fmt.Errorf("failed to discover skills: %w", err)
 	}
 
 	agents, agentErrors, err := discovery.DiscoverAgentsWithErrors(localPath, "")
 	if err != nil {
-		return fmt.Errorf("failed to discover agents: %w", err)
+		return nil, fmt.Errorf("failed to discover agents: %w", err)
 	}
 
 	packages, err := discovery.DiscoverPackages(localPath, "")
 	if err != nil {
-		return fmt.Errorf("failed to discover packages: %w", err)
+		return nil, fmt.Errorf("failed to discover packages: %w", err)
 	}
 
 	// Collect all discovery errors
@@ -421,13 +428,13 @@ func importFromLocalPathWithMode(
 	// Discover marketplace.json
 	marketplaceConfig, marketplacePath, err := marketplace.DiscoverMarketplace(localPath, "")
 	if err != nil {
-		return fmt.Errorf("failed to parse marketplace: %w", err)
+		return nil, fmt.Errorf("failed to parse marketplace: %w", err)
 	}
 
 	// Check if any resources found
 	totalResources := len(commands) + len(skills) + len(agents) + len(packages)
 	if totalResources == 0 && marketplaceConfig == nil {
-		return fmt.Errorf("no resources found in: %s\nExpected commands (*.md), skills (*/SKILL.md), agents (*.md), packages (*.package.json), or marketplace.json", localPath)
+		return nil, fmt.Errorf("no resources found in: %s\nExpected commands (*.md), skills (*/SKILL.md), agents (*.md), packages (*.package.json), or marketplace.json", localPath)
 	}
 
 	// Get absolute path for display
@@ -439,15 +446,16 @@ func importFromLocalPathWithMode(
 	origAgentCount := len(agents)
 	origPackageCount := len(packages)
 
-	// Determine if we should print informational output
-	isHumanFormat := addFormatFlag == "" || addFormatFlag == "table"
+	// Determine if we should print informational output.
+	// When syncSilentMode is true, all printing is suppressed regardless of format.
+	isHumanFormat := !syncSilentMode && (addFormatFlag == "" || addFormatFlag == "table")
 
 	// Apply filter if specified
 	if len(filter) > 0 {
 		var err error
 		commands, skills, agents, packages, err = applyFilter(filter, commands, skills, agents, packages)
 		if err != nil {
-			return err
+			return nil, err
 		}
 
 		// Check if filter matched any resources
@@ -456,7 +464,7 @@ func importFromLocalPathWithMode(
 			if isHumanFormat {
 				fmt.Printf("⚠ Warning: Filter '%s' matched 0 resources (found %d total)\n\n", strings.Join(filter, ", "), totalResources)
 			}
-			return nil
+			return nil, nil
 		}
 
 		// Show filtered counts
@@ -492,7 +500,7 @@ func importFromLocalPathWithMode(
 		basePath := filepath.Dir(marketplacePath)
 		marketplacePackages, err = marketplace.GeneratePackages(marketplaceConfig, basePath)
 		if err != nil {
-			return fmt.Errorf("failed to generate packages from marketplace: %w", err)
+			return nil, fmt.Errorf("failed to generate packages from marketplace: %w", err)
 		}
 
 		if isHumanFormat {
@@ -561,11 +569,14 @@ func importFromLocalPathWithMode(
 		Ref:          ref,
 	}
 
-	result, err := manager.AddBulk(allPaths, opts)
+	bulkResult, err := manager.AddBulk(allPaths, opts)
 	if err != nil && !skipExistingFlag {
-		// Print partial results before error
-		printImportResults(result)
-		return err
+		// Convert to output type and print partial results before error (only when not silent)
+		bulkOpResult := output.FromBulkImportResult(bulkResult)
+		if !syncSilentMode {
+			printImportResults(bulkResult)
+		}
+		return bulkOpResult, err
 	}
 
 	// Save marketplace-generated packages if not in dry-run mode
@@ -573,27 +584,34 @@ func importFromLocalPathWithMode(
 		for _, pkgInfo := range marketplacePackages {
 			// Save package to repository
 			if err := resource.SavePackage(pkgInfo.Package, manager.GetRepoPath()); err != nil {
-				fmt.Printf("⚠ Warning: Failed to save package %s: %v\n", pkgInfo.Package.Name, err)
+				if !syncSilentMode {
+					fmt.Printf("⚠ Warning: Failed to save package %s: %v\n", pkgInfo.Package.Name, err)
+				}
 				continue
 			}
 		}
 	}
 
-	// Print discovery errors if any (only for human-readable format)
+	// Convert bulk result to output type
+	bulkOpResult := output.FromBulkImportResult(bulkResult)
+
+	// Print discovery errors if any (only for human-readable, non-silent format)
 	if isHumanFormat && len(discoveryErrors) > 0 {
 		printDiscoveryErrors(discoveryErrors)
 		fmt.Println()
 	}
 
-	// Print results
-	printImportResults(result)
-
-	// Exit with error if there were failures
-	if len(result.Failed) > 0 {
-		return fmt.Errorf("failed to import %d resource(s)", len(result.Failed))
+	// Print results (suppressed in syncSilentMode — caller handles output)
+	if !syncSilentMode {
+		printImportResults(bulkResult)
 	}
 
-	return nil
+	// Exit with error if there were failures
+	if len(bulkResult.Failed) > 0 {
+		return bulkOpResult, fmt.Errorf("failed to import %d resource(s)", len(bulkResult.Failed))
+	}
+
+	return bulkOpResult, nil
 }
 
 // addBulkFromLocal handles bulk add from a local folder or single file
@@ -658,7 +676,9 @@ func addBulkFromLocalWithMode(localPath string, manager *repo.Manager, filter []
 	}
 
 	// Call common import function with import mode
-	return importFromLocalPathWithMode(localPath, manager, filter, sourceURL, sourceType, "", importMode, sourceName, sourceID)
+	var importErr error
+	_, importErr = importFromLocalPathWithMode(localPath, manager, filter, sourceURL, sourceType, "", importMode, sourceName, sourceID)
+	return importErr
 }
 
 // addBulkFromGitHub handles bulk add from a GitHub repository
@@ -744,7 +764,8 @@ func addBulkFromGitHubWithFilter(parsed *source.ParsedSource, manager *repo.Mana
 	}
 
 	// Call common import function with workspace path
-	return importFromLocalPathWithMode(searchPath, manager, filter, parsed.URL, sourceType, parsed.Ref, "copy", sourceName, sourceID)
+	_, err = importFromLocalPathWithMode(searchPath, manager, filter, parsed.URL, sourceType, parsed.Ref, "copy", sourceName, sourceID)
+	return err
 }
 
 // selectResource handles resource selection when multiple resources are found

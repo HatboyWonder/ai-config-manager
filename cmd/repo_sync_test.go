@@ -1,18 +1,141 @@
 package cmd
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/dynatrace-oss/ai-config-manager/v3/pkg/output"
 	"github.com/dynatrace-oss/ai-config-manager/v3/pkg/repo"
 	"github.com/dynatrace-oss/ai-config-manager/v3/pkg/repomanifest"
 	"github.com/dynatrace-oss/ai-config-manager/v3/pkg/resource"
 	"github.com/dynatrace-oss/ai-config-manager/v3/pkg/sourcemetadata"
+	"github.com/dynatrace-oss/ai-config-manager/v3/pkg/workspace"
 )
+
+type fakeWorkspaceManager struct {
+	cachePath     string
+	getOrCloneN   int
+	updateN       int
+	getOrCloneErr error
+	updateErr     error
+	gotCloneURL   string
+	gotRef        string
+}
+
+func (f *fakeWorkspaceManager) GetOrClone(url string, ref string) (string, error) {
+	f.getOrCloneN++
+	f.gotCloneURL = url
+	f.gotRef = ref
+	if f.getOrCloneErr != nil {
+		return "", f.getOrCloneErr
+	}
+	return f.cachePath, nil
+}
+
+func (f *fakeWorkspaceManager) Update(url string, ref string) error {
+	f.updateN++
+	f.gotCloneURL = url
+	f.gotRef = ref
+	return f.updateErr
+}
+
+func runGit(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+
+	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s failed: %v\n%s", strings.Join(args, " "), err, string(output))
+	}
+
+	return strings.TrimSpace(string(output))
+}
+
+func createRemoteGitSource(t *testing.T) (remoteURL string, worktreePath string) {
+	t.Helper()
+
+	baseDir := t.TempDir()
+	bareRepo := filepath.Join(baseDir, "remote.git")
+	worktreePath = filepath.Join(baseDir, "worktree")
+
+	runGit(t, baseDir, "init", "--bare", bareRepo)
+	runGit(t, bareRepo, "symbolic-ref", "HEAD", "refs/heads/main")
+	runGit(t, baseDir, "clone", bareRepo, worktreePath)
+	runGit(t, worktreePath, "branch", "-M", "main")
+
+	return bareRepo, worktreePath
+}
+
+func writeAndCommitRemoteCommand(t *testing.T, worktreePath, name, description string) {
+	t.Helper()
+
+	cmdDir := filepath.Join(worktreePath, "commands")
+	if err := os.MkdirAll(cmdDir, 0755); err != nil {
+		t.Fatalf("failed to create commands dir: %v", err)
+	}
+
+	content := fmt.Sprintf("---\ndescription: %s\n---\n# %s\n", description, name)
+	cmdPath := filepath.Join(cmdDir, name+".md")
+	if err := os.WriteFile(cmdPath, []byte(content), 0644); err != nil {
+		t.Fatalf("failed to write command: %v", err)
+	}
+
+	runGit(t, worktreePath, "add", ".")
+	runGit(t, worktreePath, "-c", "user.name=Test User", "-c", "user.email=test@example.com", "commit", "-m", fmt.Sprintf("add %s", name))
+	runGit(t, worktreePath, "push", "origin", "main")
+}
+
+func captureOutput(t *testing.T, fn func()) (string, string) {
+	t.Helper()
+
+	oldStdout := os.Stdout
+	oldStderr := os.Stderr
+
+	stdoutR, stdoutW, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("failed to create stdout pipe: %v", err)
+	}
+	stderrR, stderrW, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("failed to create stderr pipe: %v", err)
+	}
+
+	os.Stdout = stdoutW
+	os.Stderr = stderrW
+
+	stdoutCh := make(chan string, 1)
+	stderrCh := make(chan string, 1)
+
+	go func() {
+		var buf bytes.Buffer
+		_, _ = io.Copy(&buf, stdoutR)
+		stdoutCh <- buf.String()
+	}()
+	go func() {
+		var buf bytes.Buffer
+		_, _ = io.Copy(&buf, stderrR)
+		stderrCh <- buf.String()
+	}()
+
+	fn()
+
+	_ = stdoutW.Close()
+	_ = stderrW.Close()
+	os.Stdout = oldStdout
+	os.Stderr = oldStderr
+
+	stdout := <-stdoutCh
+	stderr := <-stderrCh
+	return stdout, stderr
+}
 
 // Test helper: create a minimal test source directory with resources
 func createTestSource(t *testing.T) string {
@@ -1139,7 +1262,7 @@ func TestSyncSource_ReturnsSourcePath(t *testing.T) {
 	}
 
 	// syncSource should return the source path
-	returnedPath, err := syncSource(sources[0], manager)
+	returnedPath, _, err := syncSource(sources[0], manager)
 	if err != nil {
 		t.Fatalf("syncSource failed: %v", err)
 	}
@@ -1194,6 +1317,170 @@ func TestRunSync_DryRunDoesNotRemoveOrphans(t *testing.T) {
 	danglingCmd := filepath.Join(repoPath, "commands", "pdf-command.md")
 	if _, err := os.Lstat(danglingCmd); err != nil {
 		t.Errorf("dry-run should NOT have removed pdf-command, but it's gone: %v", err)
+	}
+}
+
+func TestPrepareRemoteSourcePath_RefreshesCachedRepo(t *testing.T) {
+	wsMgr := &fakeWorkspaceManager{cachePath: "/tmp/cache"}
+
+	path, err := prepareRemoteSourcePath(wsMgr, "https://example.com/repo", "main")
+	if err != nil {
+		t.Fatalf("prepareRemoteSourcePath failed: %v", err)
+	}
+
+	if path != "/tmp/cache" {
+		t.Fatalf("prepareRemoteSourcePath returned %q, want %q", path, "/tmp/cache")
+	}
+
+	if wsMgr.getOrCloneN != 1 {
+		t.Fatalf("GetOrClone called %d times, want 1", wsMgr.getOrCloneN)
+	}
+
+	if wsMgr.updateN != 1 {
+		t.Fatalf("Update called %d times, want 1", wsMgr.updateN)
+	}
+
+	if wsMgr.gotCloneURL != "https://example.com/repo" {
+		t.Fatalf("clone URL = %q, want %q", wsMgr.gotCloneURL, "https://example.com/repo")
+	}
+
+	if wsMgr.gotRef != "main" {
+		t.Fatalf("ref = %q, want %q", wsMgr.gotRef, "main")
+	}
+}
+
+func TestPrepareRemoteSourcePath_FailsWhenUpdateFails(t *testing.T) {
+	wsMgr := &fakeWorkspaceManager{
+		cachePath: "/tmp/cache",
+		updateErr: fmt.Errorf("fetch failed"),
+	}
+
+	_, err := prepareRemoteSourcePath(wsMgr, "https://example.com/repo", "main")
+	if err == nil {
+		t.Fatal("expected error when update fails")
+	}
+
+	if !strings.Contains(err.Error(), "failed to update cached repository") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if wsMgr.updateN != 1 {
+		t.Fatalf("Update called %d times, want 1", wsMgr.updateN)
+	}
+}
+
+func TestRunSync_RemoteSourceRefreshesStaleCache(t *testing.T) {
+	remoteOrigin, worktreePath := createRemoteGitSource(t)
+	writeAndCommitRemoteCommand(t, worktreePath, "remote-command", "version one")
+
+	remoteURL := "https://example.com/test/remote.git"
+
+	sources := []*repomanifest.Source{{
+		Name: "remote-source",
+		URL:  remoteURL,
+	}}
+	repoPath, cleanup := setupTestManifest(t, sources)
+	defer cleanup()
+
+	cacheRepoPath := filepath.Join(repoPath, ".workspace", workspace.ComputeHash(remoteURL))
+	if err := os.MkdirAll(filepath.Dir(cacheRepoPath), 0755); err != nil {
+		t.Fatalf("failed to create workspace dir: %v", err)
+	}
+	runGit(t, repoPath, "clone", "-b", "main", remoteOrigin, cacheRepoPath)
+	runGit(t, cacheRepoPath, "checkout", "main")
+
+	writeAndCommitRemoteCommand(t, worktreePath, "remote-command", "version two")
+
+	err := runSync(syncCmd, []string{})
+	if err != nil {
+		t.Fatalf("sync command failed: %v", err)
+	}
+
+	cmdPath := filepath.Join(repoPath, "commands", "remote-command.md")
+	data, err := os.ReadFile(cmdPath)
+	if err != nil {
+		t.Fatalf("failed to read synced command: %v", err)
+	}
+
+	content := string(data)
+	if !strings.Contains(content, "version two") {
+		t.Fatalf("expected synced command to contain refreshed content, got:\n%s", content)
+	}
+}
+
+func TestPrintSyncOutputTable_CompactIncludesRemovedCounts(t *testing.T) {
+	so := &syncOutput{
+		Sources: []sourceSyncResult{
+			{
+				Name:         "anthropics",
+				Mode:         "remote",
+				RemovedCount: 2,
+				Result: &output.BulkOperationResult{
+					Added:   []output.ResourceResult{{Name: "new-skill", Type: "skill"}},
+					Updated: []output.ResourceResult{{Name: "old-skill", Type: "skill"}},
+				},
+			},
+		},
+		Summary:  syncSummary{SourcesTotal: 1, SourcesSynced: 1, ResourcesAdded: 1, ResourcesUpdated: 1, ResourcesRemoved: 2},
+		Warnings: []string{"removed resources may have active project installations; run 'aimgr repair' in affected projects if needed"},
+	}
+
+	stdout, stderr := captureOutput(t, func() {
+		printSyncOutputTable(so, false)
+	})
+
+	if !strings.Contains(stdout, "✓ anthropics (remote)") {
+		t.Fatalf("expected compact source line, got:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, "1 added, 1 updated, 2 removed") {
+		t.Fatalf("expected removed count in compact output, got:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, "warnings: 1") {
+		t.Fatalf("expected compact warning summary, got:\n%s", stdout)
+	}
+	if stderr != "" {
+		t.Fatalf("expected no stderr output, got:\n%s", stderr)
+	}
+}
+
+func TestRunSync_JSONOutputIsSingleDocument(t *testing.T) {
+	source1 := createTestSource(t)
+	sources := []*repomanifest.Source{{Name: "test-source-1", Path: source1}}
+	_, cleanup := setupTestManifest(t, sources)
+	defer cleanup()
+
+	oldFormat := syncFormatFlag
+	oldVerbose := syncVerboseFlag
+	syncFormatFlag = "json"
+	syncVerboseFlag = false
+	defer func() {
+		syncFormatFlag = oldFormat
+		syncVerboseFlag = oldVerbose
+	}()
+
+	var runErr error
+	stdout, stderr := captureOutput(t, func() {
+		runErr = runSync(syncCmd, []string{})
+	})
+	if runErr != nil {
+		t.Fatalf("runSync failed: %v", runErr)
+	}
+	if stderr != "" {
+		t.Fatalf("expected no stderr output in json mode, got:\n%s", stderr)
+	}
+	if strings.Contains(stdout, "Syncing from") {
+		t.Fatalf("expected no human progress output in json mode, got:\n%s", stdout)
+	}
+
+	var got syncOutput
+	if err := json.Unmarshal([]byte(stdout), &got); err != nil {
+		t.Fatalf("expected valid JSON output, got error: %v\noutput:\n%s", err, stdout)
+	}
+	if got.Summary.SourcesTotal != 1 {
+		t.Fatalf("expected one source in json summary, got %+v", got.Summary)
+	}
+	if len(got.Sources) != 1 {
+		t.Fatalf("expected one source result, got %d", len(got.Sources))
 	}
 }
 
