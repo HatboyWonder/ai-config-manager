@@ -788,8 +788,16 @@ func setupRealisticMarketplace(t *testing.T, baseDir string) {
 				if err != nil {
 					t.Fatalf("Failed to read skill from helper: %v", err)
 				}
-				if err := os.WriteFile(skillMdPath, content, 0644); err != nil {
+				file, err := os.OpenFile(skillMdPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
+				if err != nil {
+					t.Fatalf("Failed to open SKILL.md for write: %v", err)
+				}
+				if _, err := file.Write(content); err != nil {
+					_ = file.Close()
 					t.Fatalf("Failed to create SKILL.md: %v", err)
+				}
+				if err := file.Close(); err != nil {
+					t.Fatalf("Failed to close SKILL.md file: %v", err)
 				}
 			}
 		}
@@ -810,8 +818,16 @@ func setupRealisticMarketplace(t *testing.T, baseDir string) {
 				if err != nil {
 					t.Fatalf("Failed to read agent from helper: %v", err)
 				}
-				if err := os.WriteFile(agentPath, content, 0644); err != nil {
+				file, err := os.OpenFile(agentPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
+				if err != nil {
+					t.Fatalf("Failed to open agent for write: %v", err)
+				}
+				if _, err := file.Write(content); err != nil {
+					_ = file.Close()
 					t.Fatalf("Failed to create agent: %v", err)
+				}
+				if err := file.Close(); err != nil {
+					t.Fatalf("Failed to close agent file: %v", err)
 				}
 			}
 		}
@@ -835,8 +851,16 @@ func setupSimpleMarketplace(t *testing.T, baseDir string) {
 	if err != nil {
 		t.Fatalf("Failed to read command from helper: %v", err)
 	}
-	if err := os.WriteFile(cmdPath, content, 0644); err != nil {
+	file, err := os.OpenFile(cmdPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
+	if err != nil {
+		t.Fatalf("Failed to open command for write: %v", err)
+	}
+	if _, err := file.Write(content); err != nil {
+		_ = file.Close()
 		t.Fatalf("Failed to create command: %v", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("Failed to close command file: %v", err)
 	}
 }
 
