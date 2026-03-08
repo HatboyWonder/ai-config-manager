@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [3.2.0] - 2026-03-08
+
+### Added
+- **Shared manifest apply workflow** — Added `aimgr repo apply-manifest` to apply reusable `ai.repo.yaml` manifests, including support for loading manifests from stdin for piping and automation workflows.
+- **Manifest inspection command** — Added `aimgr repo show-manifest` to print the current repository manifest for sharing and reproducible setup flows.
+
+### Changed
+- **Manifest command clarity** — Renamed manifest-sharing command surfaces for clearer intent and updated repository command docs to document shared-manifest workflows end to end.
+- **Manifest merge behavior** — Improved manifest merge/loading support so apply flows can safely combine existing and incoming source definitions.
+
+### Fixed
+- **Repair handling for package manifest entries** — `aimgr repair` now correctly handles package manifest entries during repair so package references are preserved and validated correctly.
+
+
 ## [3.1.0] - 2026-03-08
 
 ### Added
@@ -852,6 +866,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Cross-platform support (Linux, macOS)
 - Configuration management with XDG base directory support
 
+[3.2.0]: https://github.com/dynatrace-oss/ai-config-manager/compare/v3.1.0...v3.2.0
 [3.1.0]: https://github.com/dynatrace-oss/ai-config-manager/compare/v3.0.1...v3.1.0
 [3.0.1]: https://github.com/dynatrace-oss/ai-config-manager/compare/v3.0.0...v3.0.1
 [3.0.0]: https://github.com/dynatrace-oss/ai-config-manager/compare/v2.10.0...v3.0.0
