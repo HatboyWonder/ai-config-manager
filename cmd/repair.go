@@ -326,6 +326,35 @@ func applyRepairBrokenOrWrongRepo(projectPath string, issue VerifyIssue, repoMan
 func applyRepairNotInstalled(projectPath string, issue VerifyIssue, repoManager *repo.Manager, detectedTools []tools.Tool) RepairAction {
 	fmt.Printf("  Installing %s...\n", issue.Resource)
 
+	// Create installer
+	installer, err := install.NewInstallerWithTargets(projectPath, detectedTools)
+	if err != nil {
+		msg := fmt.Sprintf("Failed to create installer: %v", err)
+		fmt.Fprintf(os.Stderr, "    %s\n", msg)
+		return RepairAction{Resource: issue.Resource, Tool: issue.Tool, IssueType: issue.IssueType, Description: msg}
+	}
+
+	// Handle package references explicitly. The generic resource parser only
+	// supports concrete resource members, while package installation expands to
+	// and installs all constituent resources.
+	if strings.HasPrefix(issue.Resource, "package/") {
+		packageName := strings.TrimPrefix(issue.Resource, "package/")
+		if packageName == "" {
+			msg := fmt.Sprintf("Cannot parse resource reference '%s': package name cannot be empty", issue.Resource)
+			fmt.Fprintf(os.Stderr, "    %s\n", msg)
+			return RepairAction{Resource: issue.Resource, Tool: issue.Tool, IssueType: issue.IssueType, Description: msg}
+		}
+
+		if installErr := installPackage(packageName, installer, repoManager); installErr != nil {
+			msg := fmt.Sprintf("Failed to install: %v", installErr)
+			fmt.Fprintf(os.Stderr, "    %s\n", msg)
+			return RepairAction{Resource: issue.Resource, Tool: issue.Tool, IssueType: issue.IssueType, Description: msg}
+		}
+
+		fmt.Printf("    ✓ Installed %s\n", issue.Resource)
+		return RepairAction{} // empty = success
+	}
+
 	// Parse "type/name" from the resource reference
 	resType, resName, err := resource.ParseResourceReference(issue.Resource)
 	if err != nil {
@@ -338,14 +367,6 @@ func applyRepairNotInstalled(projectPath string, issue VerifyIssue, repoManager 
 	if _, err := repoManager.Get(resName, resType); err != nil {
 		msg := fmt.Sprintf("Resource '%s' not found in repository — remove from %s or run 'aimgr repo add'", issue.Resource, manifest.ManifestFileName)
 		fmt.Printf("    ✗ %s\n", msg)
-		return RepairAction{Resource: issue.Resource, Tool: issue.Tool, IssueType: issue.IssueType, Description: msg}
-	}
-
-	// Install it
-	installer, err := install.NewInstallerWithTargets(projectPath, detectedTools)
-	if err != nil {
-		msg := fmt.Sprintf("Failed to create installer: %v", err)
-		fmt.Fprintf(os.Stderr, "    %s\n", msg)
 		return RepairAction{Resource: issue.Resource, Tool: issue.Tool, IssueType: issue.IssueType, Description: msg}
 	}
 

@@ -183,9 +183,9 @@ func TestRepair_MissingResource(t *testing.T) {
 	}
 }
 
-// TestRepair_PackageExpansion verifies that when a package member is missing,
-// applyRepairFixes installs it individually.
-func TestRepair_PackageExpansion(t *testing.T) {
+// TestRepair_PackageReference verifies that a package manifest issue can be
+// repaired by installing the package members.
+func TestRepair_PackageReference(t *testing.T) {
 	projectDir := t.TempDir()
 	repoDir := t.TempDir()
 
@@ -245,28 +245,17 @@ func TestRepair_PackageExpansion(t *testing.T) {
 	if len(manifestIssues) == 0 {
 		t.Fatal("Expected at least 1 manifest issue for missing package member")
 	}
-
-	// The issue has resource = "package/my-pkg" which cannot be directly installed.
-	// We need to detect that it's a package issue and install the individual members.
-	// For the current implementation, checkManifestSync reports a package-level issue
-	// describing which members are missing. Repair handles the "package/my-pkg"
-	// reference by trying ParseResourceReference which will fail (type=package is
-	// invalid), so let's verify the not-installed issue for the actual member resource.
-	//
-	// What we test here: the package member skill can be installed via a
-	// not-installed issue referencing "skill/pkg-skill" directly.
-	memberIssue := VerifyIssue{
-		Resource:  "skill/pkg-skill",
-		Tool:      "any",
-		IssueType: issueTypeNotInstalled,
-		Path:      filepath.Join(projectDir, manifest.ManifestFileName),
-		Severity:  "warning",
+	if manifestIssues[0].Resource != "package/my-pkg" {
+		t.Fatalf("Expected package-level issue, got %+v", manifestIssues[0])
 	}
 
-	result := applyRepairFixes(projectDir, []VerifyIssue{memberIssue}, manager)
+	result := applyRepairFixes(projectDir, manifestIssues, manager)
 
 	if result.Summary.Fixed != 1 {
 		t.Errorf("Expected 1 fixed, got %d. Failed: %+v", result.Summary.Fixed, result.Failed)
+	}
+	if result.Summary.Failed != 0 {
+		t.Errorf("Expected 0 failed, got %d: %+v", result.Summary.Failed, result.Failed)
 	}
 
 	// Verify the skill member is now installed
@@ -277,6 +266,44 @@ func TestRepair_PackageExpansion(t *testing.T) {
 	}
 	if info.Mode()&os.ModeSymlink == 0 {
 		t.Error("Expected a symlink, got regular file/directory")
+	}
+}
+
+// TestRepair_MissingPackageReference verifies that missing package references
+// fail with a clear repository lookup error.
+func TestRepair_MissingPackageReference(t *testing.T) {
+	projectDir := t.TempDir()
+	repoDir := t.TempDir()
+
+	manager := repo.NewManagerWithPath(repoDir)
+	if err := manager.Init(); err != nil {
+		t.Fatalf("Failed to init repo: %v", err)
+	}
+
+	// Create tool directory so the installer can be constructed.
+	skillsDir := filepath.Join(projectDir, ".opencode", "skills")
+	if err := os.MkdirAll(skillsDir, 0755); err != nil {
+		t.Fatalf("Failed to create skills dir: %v", err)
+	}
+
+	issues := []VerifyIssue{{
+		Resource:  "package/nonexistent-pkg",
+		Tool:      "any",
+		IssueType: issueTypeNotInstalled,
+		Path:      filepath.Join(projectDir, manifest.ManifestFileName),
+		Severity:  "warning",
+	}}
+
+	result := applyRepairFixes(projectDir, issues, manager)
+
+	if result.Summary.Fixed != 0 {
+		t.Errorf("Expected 0 fixed, got %d", result.Summary.Fixed)
+	}
+	if result.Summary.Failed != 1 {
+		t.Fatalf("Expected 1 failed, got %d: %+v", result.Summary.Failed, result.Failed)
+	}
+	if !strings.Contains(result.Failed[0].Description, "package 'nonexistent-pkg' not found in repository") {
+		t.Errorf("Expected clear missing package error, got: %s", result.Failed[0].Description)
 	}
 }
 

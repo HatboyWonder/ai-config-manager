@@ -109,11 +109,8 @@ func TestRepairIntegration_OrphanedResources(t *testing.T) {
 	assertFileExists(t, filepath.Join(p.projectDir, ".claude", "skills", "orphan-skill"))
 }
 
-// TestRepairIntegration_PackageMembers verifies that when a package is in the manifest
-// and its member skills are missing from disk, repair detects and reports the issue.
-// Note: repair currently detects the package issue and reports it (possibly as a failed
-// fix), but does not expand packages into individual member installs at the resource level.
-// This test verifies that the command completes without crashing and reports the package.
+// TestRepairIntegration_PackageMembers verifies that repair installs missing
+// package members when the manifest references a package.
 func TestRepairIntegration_PackageMembers(t *testing.T) {
 	p := setupRepairTestProject(t)
 	p.addSkillToRepo(t, "pkg-skill", "A skill that is a package member")
@@ -127,13 +124,15 @@ func TestRepairIntegration_PackageMembers(t *testing.T) {
 		t.Fatalf("Failed to create skills dir: %v", err)
 	}
 
-	// repair should not crash — it detects the package issue even if it cannot fully
-	// resolve it via the not-installed path (package refs are not directly installable).
-	output, _ := runAimgr(t, "repair", "--project-path", p.projectDir)
+	output, err := runAimgr(t, "repair", "--project-path", p.projectDir)
+	if err != nil {
+		t.Fatalf("repair failed: %v\nOutput: %s", err, output)
+	}
 	t.Logf("repair output for package members: %s", output)
 
-	// The output should mention the package
-	assertOutputContains(t, output, "my-pkg")
+	assertOutputContains(t, output, "package/my-pkg")
+	assertOutputNotContains(t, output, `invalid resource type: "package"`)
+	assertFileExists(t, filepath.Join(p.projectDir, ".claude", "skills", "pkg-skill"))
 }
 
 // TestRepairIntegration_PackageNotInRepo verifies that when a manifest references
@@ -151,8 +150,8 @@ func TestRepairIntegration_PackageNotInRepo(t *testing.T) {
 
 	// repair should not crash — it may report warnings or failures but exit 0
 	output, _ := runAimgr(t, "repair", "--project-path", p.projectDir)
-	// Output should mention something about the package or nothing to do
-	// The key assertion is that the CLI doesn't panic/crash
+	assertOutputContains(t, output, "package 'nonexistent-pkg' not found in repository")
+	assertOutputNotContains(t, output, `invalid resource type: "package"`)
 	t.Logf("repair output for missing package: %s", output)
 }
 
