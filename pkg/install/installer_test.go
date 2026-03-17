@@ -11,6 +11,22 @@ import (
 	"github.com/dynatrace-oss/ai-config-manager/v3/pkg/tools"
 )
 
+func writeGlobalConfig(t *testing.T, xdgConfigHome string, content string) string {
+	t.Helper()
+
+	configDir := filepath.Join(xdgConfigHome, "aimgr")
+	if err := os.MkdirAll(configDir, 0755); err != nil {
+		t.Fatalf("Failed to create config directory: %v", err)
+	}
+
+	configPath := filepath.Join(configDir, "aimgr.yaml")
+	if err := os.WriteFile(configPath, []byte(content), 0644); err != nil {
+		t.Fatalf("Failed to write config file: %v", err)
+	}
+
+	return configPath
+}
+
 func setupTestRepo(t *testing.T) *repo.Manager {
 	t.Helper()
 
@@ -739,5 +755,111 @@ func TestInstallCommandCopilotReturnsUnsupportedError(t *testing.T) {
 	githubCommandsDir := filepath.Join(projectDir, ".github", "commands")
 	if _, err := os.Stat(githubCommandsDir); err == nil {
 		t.Error("Copilot should not create commands directory (commands not supported)")
+	}
+}
+
+func TestGetSymlinkSourcePrefersModificationPath(t *testing.T) {
+	repoPath := t.TempDir()
+	projectDir := t.TempDir()
+
+	xdgConfigHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", xdgConfigHome)
+	writeGlobalConfig(t, xdgConfigHome, "install:\n  targets:\n    - claude\n")
+
+	res := &resource.Resource{
+		Name: "test-cmd",
+		Type: resource.Command,
+		Path: filepath.Join(repoPath, "commands", "test-cmd.md"),
+	}
+
+	modPath := filepath.Join(repoPath, ".modifications", "claude", "commands", "test-cmd.md")
+	if err := os.MkdirAll(filepath.Dir(modPath), 0755); err != nil {
+		t.Fatalf("Failed to create modification directory: %v", err)
+	}
+	if err := os.WriteFile(modPath, []byte("# modified"), 0644); err != nil {
+		t.Fatalf("Failed to create modification file: %v", err)
+	}
+
+	installer, err := NewInstallerWithTargets(projectDir, []tools.Tool{tools.Claude})
+	if err != nil {
+		t.Fatalf("NewInstallerWithTargets() error = %v", err)
+	}
+
+	got := installer.getSymlinkSource(res, tools.Claude, repoPath)
+	if got != modPath {
+		t.Fatalf("getSymlinkSource() = %q, want modification path %q", got, modPath)
+	}
+}
+
+func TestGetSymlinkSourceFallsBackOnConfigLoadFailure(t *testing.T) {
+	repoPath := t.TempDir()
+	projectDir := t.TempDir()
+
+	res := &resource.Resource{
+		Name: "test-cmd",
+		Type: resource.Command,
+		Path: filepath.Join(repoPath, "commands", "test-cmd.md"),
+	}
+
+	modPath := filepath.Join(repoPath, ".modifications", "claude", "commands", "test-cmd.md")
+	if err := os.MkdirAll(filepath.Dir(modPath), 0755); err != nil {
+		t.Fatalf("Failed to create modification directory: %v", err)
+	}
+	if err := os.WriteFile(modPath, []byte("# modified"), 0644); err != nil {
+		t.Fatalf("Failed to create modification file: %v", err)
+	}
+
+	installer, err := NewInstallerWithTargets(projectDir, []tools.Tool{tools.Claude})
+	if err != nil {
+		t.Fatalf("NewInstallerWithTargets() error = %v", err)
+	}
+	installer.globalConfigLoaded = true
+	installer.globalConfigErr = os.ErrPermission
+
+	got := installer.getSymlinkSource(res, tools.Claude, repoPath)
+	if got != res.Path {
+		t.Fatalf("getSymlinkSource() = %q, want original path %q on config error", got, res.Path)
+	}
+}
+
+func TestGetSymlinkSourceCachesGlobalConfigPerInstaller(t *testing.T) {
+	repoPath := t.TempDir()
+	projectDir := t.TempDir()
+
+	xdgConfigHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", xdgConfigHome)
+	configPath := writeGlobalConfig(t, xdgConfigHome, "install:\n  targets:\n    - claude\n")
+
+	res := &resource.Resource{
+		Name: "test-cmd",
+		Type: resource.Command,
+		Path: filepath.Join(repoPath, "commands", "test-cmd.md"),
+	}
+
+	modPath := filepath.Join(repoPath, ".modifications", "claude", "commands", "test-cmd.md")
+	if err := os.MkdirAll(filepath.Dir(modPath), 0755); err != nil {
+		t.Fatalf("Failed to create modification directory: %v", err)
+	}
+	if err := os.WriteFile(modPath, []byte("# modified"), 0644); err != nil {
+		t.Fatalf("Failed to create modification file: %v", err)
+	}
+
+	installer, err := NewInstallerWithTargets(projectDir, []tools.Tool{tools.Claude})
+	if err != nil {
+		t.Fatalf("NewInstallerWithTargets() error = %v", err)
+	}
+
+	first := installer.getSymlinkSource(res, tools.Claude, repoPath)
+	if first != modPath {
+		t.Fatalf("first getSymlinkSource() = %q, want %q", first, modPath)
+	}
+
+	if err := os.WriteFile(configPath, []byte("install: [invalid"), 0644); err != nil {
+		t.Fatalf("Failed to corrupt config file: %v", err)
+	}
+
+	second := installer.getSymlinkSource(res, tools.Claude, repoPath)
+	if second != modPath {
+		t.Fatalf("second getSymlinkSource() = %q, want cached modification path %q", second, modPath)
 	}
 }

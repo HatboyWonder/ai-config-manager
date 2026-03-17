@@ -22,6 +22,91 @@ var (
 	listInstalledPathFlag   string
 )
 
+// listInstalledState holds shared state for a single `aimgr list` invocation.
+// It is threaded through the pipeline so manifest/repo/package lookups happen once.
+type listInstalledState struct {
+	manifest         *manifest.Manifest
+	expandedManifest map[string]bool
+	manager          interface{ GetRepoPath() string }
+	packageCache     map[string]*resource.Package
+}
+
+func newListInstalledState(projectPath string) *listInstalledState {
+	state := &listInstalledState{
+		packageCache: make(map[string]*resource.Package),
+	}
+
+	manifestPath := filepath.Join(projectPath, manifest.ManifestFileName)
+	m, err := manifest.Load(manifestPath)
+	if err != nil {
+		return state // No manifest (or unreadable manifest): keep graceful degradation
+	}
+
+	state.manifest = m
+	state.expandedManifest = make(map[string]bool)
+
+	hasPackageRefs := false
+	for _, ref := range m.Resources {
+		if strings.HasPrefix(ref, "package/") {
+			hasPackageRefs = true
+			break
+		}
+	}
+
+	// Create repo manager at most once for this command invocation.
+	if hasPackageRefs {
+		if manager, managerErr := NewManagerWithLogLevel(); managerErr == nil {
+			state.manager = manager
+		}
+	}
+
+	for _, ref := range m.Resources {
+		state.expandedManifest[ref] = true
+
+		if !strings.HasPrefix(ref, "package/") {
+			continue
+		}
+
+		packageName := strings.TrimPrefix(ref, "package/")
+		pkg := state.getPackage(packageName)
+		if pkg == nil {
+			continue // Missing package/repo: keep graceful degradation
+		}
+
+		for _, memberRef := range pkg.Resources {
+			state.expandedManifest[memberRef] = true
+		}
+	}
+
+	return state
+}
+
+func (s *listInstalledState) getPackage(packageName string) *resource.Package {
+	if s == nil {
+		return nil
+	}
+
+	if pkg, ok := s.packageCache[packageName]; ok {
+		return pkg
+	}
+
+	if s.manager == nil {
+		s.packageCache[packageName] = nil
+		return nil
+	}
+
+	repoPath := s.manager.GetRepoPath()
+	pkgPath := resource.GetPackagePath(packageName, repoPath)
+	pkg, err := resource.LoadPackage(pkgPath)
+	if err != nil {
+		s.packageCache[packageName] = nil
+		return nil
+	}
+
+	s.packageCache[packageName] = pkg
+	return pkg
+}
+
 // SyncStatus represents the synchronization state between installed resources and ai.package.yaml manifest
 type SyncStatus string
 
@@ -121,9 +206,11 @@ Examples:
 			return fmt.Errorf("failed to list installed resources: %w", err)
 		}
 
+		state := newListInstalledState(projectPath)
+
 		// Inject package entries from the manifest (packages have no symlinks,
 		// so installer.List() never returns them — we add them manually here).
-		resources = appendManifestPackages(resources, projectPath)
+		resources = appendManifestPackages(resources, state)
 
 		// Filter by pattern if specified
 		if len(args) > 0 {
@@ -157,7 +244,7 @@ Examples:
 		}
 
 		// Get tool installation info for each resource
-		resourceInfos := buildResourceInfo(resources, projectPath, detectedTools)
+		resourceInfos := buildResourceInfo(resources, projectPath, detectedTools, state)
 
 		// Format output based on --format flag
 		switch listInstalledFormatFlag {
@@ -166,7 +253,7 @@ Examples:
 		case "yaml":
 			return outputInstalledYAML(resourceInfos)
 		case "table":
-			return outputInstalledTable(resourceInfos, projectPath)
+			return outputInstalledTable(resourceInfos, projectPath, state)
 		default:
 			return fmt.Errorf("invalid format: %s (must be 'table', 'json', or 'yaml')", listInstalledFormatFlag)
 		}
@@ -188,36 +275,7 @@ type ResourceInfo struct {
 // including individual resources that are members of declared packages.
 // Returns nil if no manifest exists or cannot be loaded (signals "no manifest").
 func expandManifestResources(projectPath string) map[string]bool {
-	manifestPath := filepath.Join(projectPath, manifest.ManifestFileName)
-	m, err := manifest.Load(manifestPath)
-	if err != nil {
-		return nil // No manifest or error — return nil to signal "no manifest"
-	}
-
-	expanded := make(map[string]bool)
-
-	// Try to get the repo manager for package expansion
-	manager, managerErr := NewManagerWithLogLevel()
-
-	for _, ref := range m.Resources {
-		expanded[ref] = true
-
-		// If this is a package reference, expand its members
-		if strings.HasPrefix(ref, "package/") && managerErr == nil {
-			packageName := strings.TrimPrefix(ref, "package/")
-			repoPath := manager.GetRepoPath()
-			pkgPath := resource.GetPackagePath(packageName, repoPath)
-			pkg, err := resource.LoadPackage(pkgPath)
-			if err != nil {
-				continue // Package not found in repo, skip expansion
-			}
-			for _, memberRef := range pkg.Resources {
-				expanded[memberRef] = true
-			}
-		}
-	}
-
-	return expanded
+	return newListInstalledState(projectPath).expandedManifest
 }
 
 // appendManifestPackages reads ai.package.yaml and appends package/ entries as Resource objects
@@ -227,17 +285,12 @@ func expandManifestResources(projectPath string) map[string]bool {
 //
 // Errors (no manifest, repo unavailable, package not found in repo) are silently skipped
 // so that missing configuration never breaks the overall list command.
-func appendManifestPackages(resources []resource.Resource, projectPath string) []resource.Resource {
-	manifestPath := filepath.Join(projectPath, manifest.ManifestFileName)
-	m, err := manifest.Load(manifestPath)
-	if err != nil {
+func appendManifestPackages(resources []resource.Resource, state *listInstalledState) []resource.Resource {
+	if state == nil || state.manifest == nil {
 		return resources // No manifest — nothing to inject
 	}
 
-	// Try to get the repo manager so we can load package descriptions
-	manager, managerErr := NewManagerWithLogLevel()
-
-	for _, ref := range m.Resources {
+	for _, ref := range state.manifest.Resources {
 		if !strings.HasPrefix(ref, "package/") {
 			continue
 		}
@@ -249,13 +302,9 @@ func appendManifestPackages(resources []resource.Resource, projectPath string) [
 			Health: resource.HealthOK,
 		}
 
-		// Load description (and resource list) from the repo if available
-		if managerErr == nil {
-			repoPath := manager.GetRepoPath()
-			pkgPath := resource.GetPackagePath(packageName, repoPath)
-			if pkg, loadErr := resource.LoadPackage(pkgPath); loadErr == nil {
-				res.Description = pkg.Description
-			}
+		// Load description from shared package cache if available
+		if pkg := state.getPackage(packageName); pkg != nil {
+			res.Description = pkg.Description
 		}
 
 		resources = append(resources, res)
@@ -317,9 +366,14 @@ func formatSyncStatus(projectPath string, resourceRef string, isInstalled bool, 
 }
 
 // buildResourceInfo creates ResourceInfo entries with target tool information and sync status
-func buildResourceInfo(resources []resource.Resource, projectPath string, detectedTools []tools.Tool) []ResourceInfo {
+func buildResourceInfo(resources []resource.Resource, projectPath string, detectedTools []tools.Tool, state ...*listInstalledState) []ResourceInfo {
 	// Pre-compute expanded manifest (includes package member resources)
-	expandedManifest := expandManifestResources(projectPath)
+	var expandedManifest map[string]bool
+	if len(state) > 0 && state[0] != nil {
+		expandedManifest = state[0].expandedManifest
+	} else {
+		expandedManifest = expandManifestResources(projectPath)
+	}
 
 	infos := make([]ResourceInfo, 0, len(resources))
 
@@ -402,7 +456,7 @@ func isInstalledInTool(projectPath, name string, resType resource.ResourceType, 
 	return info.Mode()&os.ModeSymlink != 0
 }
 
-func outputInstalledTable(infos []ResourceInfo, projectPath string) error {
+func outputInstalledTable(infos []ResourceInfo, projectPath string, state *listInstalledState) error {
 	// Group by type
 	commands := []ResourceInfo{}
 	skills := []ResourceInfo{}
@@ -422,8 +476,11 @@ func outputInstalledTable(infos []ResourceInfo, projectPath string) error {
 		}
 	}
 
-	// Pre-compute expanded manifest for sync status display
-	expandedManifest := expandManifestResources(projectPath)
+	// Reuse pre-computed expanded manifest for sync status display
+	var expandedManifest map[string]bool
+	if state != nil {
+		expandedManifest = state.expandedManifest
+	}
 
 	// Create table with NAME, TARGETS, SYNC, STATUS, DESCRIPTION using shared infrastructure
 	table := output.NewTable("Name", "Targets", "Sync", "Status", "Description")
@@ -482,22 +539,14 @@ func outputInstalledTable(infos []ResourceInfo, projectPath string) error {
 		table.AddSeparator()
 	}
 
-	// Add packages — load repo manager once to resolve resource counts
-	var pkgManager interface{ GetRepoPath() string }
-	if m, err := NewManagerWithLogLevel(); err == nil {
-		pkgManager = m
-	}
-
 	for _, pkg := range packages {
 		resourceRef := fmt.Sprintf("package/%s", pkg.Name)
 		syncSymbol := formatSyncStatus(projectPath, resourceRef, true, expandedManifest)
 
 		// TARGETS column: show resource count from the package definition
 		targets := "-"
-		if pkgManager != nil {
-			repoPath := pkgManager.GetRepoPath()
-			pkgPath := resource.GetPackagePath(pkg.Name, repoPath)
-			if pkgDef, loadErr := resource.LoadPackage(pkgPath); loadErr == nil {
+		if state != nil {
+			if pkgDef := state.getPackage(pkg.Name); pkgDef != nil {
 				targets = fmt.Sprintf("%d resources", len(pkgDef.Resources))
 			}
 		}

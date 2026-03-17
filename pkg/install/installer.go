@@ -18,6 +18,10 @@ import (
 type Installer struct {
 	projectPath string
 	targetTools []tools.Tool // tools to install to
+
+	globalConfigLoaded bool
+	globalConfig       *config.Config
+	globalConfigErr    error
 }
 
 // NewInstaller creates a new installer for a project with default tools
@@ -165,7 +169,7 @@ func ensureValidSymlink(symlinkPath string, expectedTarget string, repoPath stri
 // getSymlinkSource returns the path to symlink to for a resource and tool.
 // Returns modification path if it exists for the target tool, otherwise returns the original path.
 func (i *Installer) getSymlinkSource(res *resource.Resource, tool tools.Tool, repoPath string) string {
-	cfg, err := config.LoadGlobal()
+	cfg, err := i.loadGlobalConfig()
 	if err != nil {
 		return res.Path // Fall back to original on config error
 	}
@@ -177,6 +181,17 @@ func (i *Installer) getSymlinkSource(res *resource.Resource, tool tools.Tool, re
 		return modPath
 	}
 	return res.Path
+}
+
+func (i *Installer) loadGlobalConfig() (*config.Config, error) {
+	if i.globalConfigLoaded {
+		return i.globalConfig, i.globalConfigErr
+	}
+
+	i.globalConfig, i.globalConfigErr = config.LoadGlobal()
+	i.globalConfigLoaded = true
+
+	return i.globalConfig, i.globalConfigErr
 }
 
 // InstallCommand installs a command resource by creating symlinks to target tools

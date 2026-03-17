@@ -633,362 +633,76 @@ func TestScanProjectIssues_NestedCommands(t *testing.T) {
 	}
 }
 
-// TestParseResourceFromIssue tests the helper that extracts resource type and name
-// from a VerifyIssue based on its path.
-func TestParseResourceFromIssue(t *testing.T) {
-	tests := []struct {
-		name         string
-		issue        VerifyIssue
-		expectedType resource.ResourceType
-		expectedName string
-	}{
-		{
-			name: "skill from opencode skills directory",
-			issue: VerifyIssue{
-				Resource: "my-skill",
-				Path:     "/project/.opencode/skills/my-skill",
-			},
-			expectedType: resource.Skill,
-			expectedName: "my-skill",
-		},
-		{
-			name: "command from claude commands directory",
-			issue: VerifyIssue{
-				Resource: "my-cmd.md",
-				Path:     "/project/.claude/commands/my-cmd.md",
-			},
-			expectedType: resource.Command,
-			expectedName: "my-cmd",
-		},
-		{
-			name: "agent from opencode agents directory",
-			issue: VerifyIssue{
-				Resource: "my-agent.md",
-				Path:     "/project/.opencode/agents/my-agent.md",
-			},
-			expectedType: resource.Agent,
-			expectedName: "my-agent",
-		},
-		{
-			name: "copilot agent strips .agent.md extension",
-			issue: VerifyIssue{
-				Resource: "reviewer.agent.md",
-				Path:     "/project/.github/agents/reviewer.agent.md",
-			},
-			expectedType: resource.Agent,
-			expectedName: "reviewer",
-		},
-		{
-			name: "command strips .md extension",
-			issue: VerifyIssue{
-				Resource: "test-command.md",
-				Path:     "/project/.opencode/commands/test-command.md",
-			},
-			expectedType: resource.Command,
-			expectedName: "test-command",
-		},
-		{
-			name: "agent strips .md extension",
-			issue: VerifyIssue{
-				Resource: "debug-agent.md",
-				Path:     "/project/.claude/agents/debug-agent.md",
-			},
-			expectedType: resource.Agent,
-			expectedName: "debug-agent",
-		},
-		{
-			name: "skill without .md extension kept as-is",
-			issue: VerifyIssue{
-				Resource: "pdf-processing",
-				Path:     "/project/.claude/skills/pdf-processing",
-			},
-			expectedType: resource.Skill,
-			expectedName: "pdf-processing",
-		},
-		{
-			name: "fallback defaults to skill",
-			issue: VerifyIssue{
-				Resource: "unknown-resource",
-				Path:     "/project/.unknown/something/unknown-resource",
-			},
-			expectedType: resource.Skill,
-			expectedName: "unknown-resource",
-		},
-		{
-			name: "nested command strips .md from namespaced name",
-			issue: VerifyIssue{
-				Resource: "api/deploy",
-				Path:     "/project/.claude/commands/api/deploy.md",
-			},
-			expectedType: resource.Command,
-			expectedName: "api/deploy",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			resType, resName := parseResourceFromIssue(tt.issue)
-
-			if resType != tt.expectedType {
-				t.Errorf("parseResourceFromIssue() type = %v, want %v", resType, tt.expectedType)
-			}
-			if resName != tt.expectedName {
-				t.Errorf("parseResourceFromIssue() name = %v, want %v", resName, tt.expectedName)
-			}
-		})
-	}
-}
-
-// TestFixVerifyIssues_ReinstallsBrokenSkill tests that fixVerifyIssues()
-// can reinstall a broken skill when the resource still exists in the repo.
-func TestFixVerifyIssues_ReinstallsBrokenSkill(t *testing.T) {
+// TestProjectVerifyFixUsesRepairReconcile verifies that verify --fix uses the
+// repair/reconcile flow to remove undeclared resources while still warning that
+// --fix is deprecated.
+func TestProjectVerifyFixUsesRepairReconcile(t *testing.T) {
 	projectDir := t.TempDir()
 	repoDir := t.TempDir()
 
-	// Initialize repo
+	oldEnv := os.Getenv("AIMGR_REPO_PATH")
+	defer func() {
+		if oldEnv != "" {
+			_ = os.Setenv("AIMGR_REPO_PATH", oldEnv)
+		} else {
+			_ = os.Unsetenv("AIMGR_REPO_PATH")
+		}
+	}()
+	_ = os.Setenv("AIMGR_REPO_PATH", repoDir)
+
 	manager := repo.NewManagerWithPath(repoDir)
 	if err := manager.Init(); err != nil {
-		t.Fatalf("Failed to init repo: %v", err)
+		t.Fatalf("Failed to initialize repo: %v", err)
 	}
 
-	// Create and add a skill to the repo
-	tempSkillDir := t.TempDir()
-	skillDir := filepath.Join(tempSkillDir, "test-skill")
-	if err := os.MkdirAll(skillDir, 0755); err != nil {
-		t.Fatalf("Failed to create skill directory: %v", err)
-	}
-	skillMDPath := filepath.Join(skillDir, "SKILL.md")
-	if err := os.WriteFile(skillMDPath, []byte("---\ndescription: A test skill\n---\n\n# Test Skill\n\nA test skill"), 0644); err != nil {
-		t.Fatalf("Failed to write SKILL.md: %v", err)
-	}
-	if err := manager.AddSkill(skillDir, "file://"+skillDir, "file"); err != nil {
-		t.Fatalf("Failed to add skill to repo: %v", err)
+	// Empty manifest means any installed content in owned dirs is undeclared.
+	m := &manifest.Manifest{Resources: []string{}}
+	if err := m.Save(filepath.Join(projectDir, manifest.ManifestFileName)); err != nil {
+		t.Fatalf("Failed to save manifest: %v", err)
 	}
 
-	// Create tool directory with a broken symlink (simulating a broken installation)
-	skillsDir := filepath.Join(projectDir, ".opencode", "skills")
-	if err := os.MkdirAll(skillsDir, 0755); err != nil {
-		t.Fatalf("Failed to create skills directory: %v", err)
+	commandsDir := filepath.Join(projectDir, ".claude", "commands")
+	if err := os.MkdirAll(commandsDir, 0755); err != nil {
+		t.Fatalf("Failed to create commands directory: %v", err)
 	}
-	brokenSymlink := filepath.Join(skillsDir, "test-skill")
-	if err := os.Symlink("/nonexistent/old-repo/skills/test-skill", brokenSymlink); err != nil {
-		t.Fatalf("Failed to create broken symlink: %v", err)
-	}
-
-	// Verify the symlink is broken
-	if _, err := os.Stat(brokenSymlink); err == nil {
-		t.Fatal("Expected broken symlink, but target exists")
+	undeclaredPath := filepath.Join(commandsDir, "orphan.md")
+	if err := os.WriteFile(undeclaredPath, []byte("orphan"), 0644); err != nil {
+		t.Fatalf("Failed to write undeclared file: %v", err)
 	}
 
-	// Create a VerifyIssue for the broken symlink
-	issues := []VerifyIssue{
-		{
-			Resource:    "test-skill",
-			Tool:        "opencode",
-			IssueType:   "broken",
-			Description: "Symlink target doesn't exist",
-			Path:        brokenSymlink,
-			Severity:    "error",
-		},
-	}
-
-	// Call fixVerifyIssues
-	fixVerifyIssues(projectDir, issues, manager)
-
-	// Verify the symlink is now valid
-	targetInfo, err := os.Stat(brokenSymlink)
+	originalDir, err := os.Getwd()
 	if err != nil {
-		t.Fatalf("Symlink target is invalid after fix: %v", err)
+		t.Fatalf("Failed to get current directory: %v", err)
 	}
-	if !targetInfo.IsDir() {
-		t.Error("Expected symlink to point to a directory")
+	defer func() { _ = os.Chdir(originalDir) }()
+	if err := os.Chdir(projectDir); err != nil {
+		t.Fatalf("Failed to change to project directory: %v", err)
 	}
 
-	// Verify symlink points to the repo
-	actualTarget, err := os.Readlink(brokenSymlink)
+	oldFix := verifyFixFlag
+	verifyFixFlag = true
+	defer func() { verifyFixFlag = oldFix }()
+
+	oldStderr := os.Stderr
+	r, w, _ := os.Pipe()
+	os.Stderr = w
+
+	err = projectVerifyCmd.RunE(projectVerifyCmd, []string{})
+
+	w.Close()
+	os.Stderr = oldStderr
+	captured := make([]byte, 4096)
+	n, _ := r.Read(captured)
+	stderrOutput := string(captured[:n])
+
 	if err != nil {
-		t.Fatalf("Failed to read symlink: %v", err)
+		t.Fatalf("verify --fix failed: %v", err)
 	}
-	expectedTarget := filepath.Join(repoDir, "skills", "test-skill")
-	if actualTarget != expectedTarget {
-		t.Errorf("Symlink points to wrong target: got %s, want %s", actualTarget, expectedTarget)
+	if !strings.Contains(stderrOutput, "Warning: --fix is deprecated. Running 'aimgr repair' reconciliation.") {
+		t.Errorf("Expected deprecation warning on stderr, got: %q", stderrOutput)
 	}
-}
-
-// TestFixVerifyIssues_ReportsUnrecoverableResource tests that fixVerifyIssues()
-// handles the case where a broken symlink's resource no longer exists in the repo.
-func TestFixVerifyIssues_ReportsUnrecoverableResource(t *testing.T) {
-	projectDir := t.TempDir()
-	repoDir := t.TempDir()
-
-	// Initialize repo (but don't add any resources)
-	manager := repo.NewManagerWithPath(repoDir)
-	if err := manager.Init(); err != nil {
-		t.Fatalf("Failed to init repo: %v", err)
-	}
-
-	// Create tool directory with a broken symlink
-	skillsDir := filepath.Join(projectDir, ".opencode", "skills")
-	if err := os.MkdirAll(skillsDir, 0755); err != nil {
-		t.Fatalf("Failed to create skills directory: %v", err)
-	}
-	brokenSymlink := filepath.Join(skillsDir, "gone-skill")
-	if err := os.Symlink("/nonexistent/old-repo/skills/gone-skill", brokenSymlink); err != nil {
-		t.Fatalf("Failed to create broken symlink: %v", err)
-	}
-
-	// Create a VerifyIssue for the broken symlink
-	issues := []VerifyIssue{
-		{
-			Resource:    "gone-skill",
-			Tool:        "opencode",
-			IssueType:   "broken",
-			Description: "Symlink target doesn't exist",
-			Path:        brokenSymlink,
-			Severity:    "error",
-		},
-	}
-
-	// Call fixVerifyIssues
-	fixVerifyIssues(projectDir, issues, manager)
-
-	// Verify the broken symlink was removed
-	if _, err := os.Lstat(brokenSymlink); err == nil {
-		t.Error("Expected broken symlink to be removed, but it still exists")
-	}
-}
-
-// TestFixVerifyIssues_InstallsNotInstalledResource tests that fixVerifyIssues()
-// can install a resource that's in the manifest but not yet installed.
-func TestFixVerifyIssues_InstallsNotInstalledResource(t *testing.T) {
-	projectDir := t.TempDir()
-	repoDir := t.TempDir()
-
-	// Initialize repo
-	manager := repo.NewManagerWithPath(repoDir)
-	if err := manager.Init(); err != nil {
-		t.Fatalf("Failed to init repo: %v", err)
-	}
-
-	// Create and add a skill to the repo
-	tempSkillDir := t.TempDir()
-	skillDir := filepath.Join(tempSkillDir, "missing-skill")
-	if err := os.MkdirAll(skillDir, 0755); err != nil {
-		t.Fatalf("Failed to create skill directory: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\ndescription: A missing skill\n---\n\n# Missing Skill"), 0644); err != nil {
-		t.Fatalf("Failed to write SKILL.md: %v", err)
-	}
-	if err := manager.AddSkill(skillDir, "file://"+skillDir, "file"); err != nil {
-		t.Fatalf("Failed to add skill to repo: %v", err)
-	}
-
-	// Create tool directory (so DetectExistingTools finds something)
-	skillsDir := filepath.Join(projectDir, ".opencode", "skills")
-	if err := os.MkdirAll(skillsDir, 0755); err != nil {
-		t.Fatalf("Failed to create skills directory: %v", err)
-	}
-
-	// Create a VerifyIssue for a not-installed resource
-	issues := []VerifyIssue{
-		{
-			Resource:    "skill/missing-skill",
-			Tool:        "any",
-			IssueType:   "not-installed",
-			Description: "Listed in ai.package.yaml but not installed",
-			Path:        filepath.Join(projectDir, "ai.package.yaml"),
-			Severity:    "warning",
-		},
-	}
-
-	// Call fixVerifyIssues
-	fixVerifyIssues(projectDir, issues, manager)
-
-	// Verify the skill is now installed
-	installedSymlink := filepath.Join(skillsDir, "missing-skill")
-	info, err := os.Lstat(installedSymlink)
-	if err != nil {
-		t.Fatalf("Expected skill to be installed, but symlink doesn't exist: %v", err)
-	}
-	if info.Mode()&os.ModeSymlink == 0 {
-		t.Error("Expected a symlink, got a regular file/directory")
-	}
-
-	// Verify the symlink target is valid
-	if _, err := os.Stat(installedSymlink); err != nil {
-		t.Errorf("Symlink target is invalid: %v", err)
-	}
-}
-
-// TestFixVerifyIssues_WrongRepoReinstalls tests that fixVerifyIssues()
-// can fix a "wrong-repo" issue by reinstalling from the correct repo.
-func TestFixVerifyIssues_WrongRepoReinstalls(t *testing.T) {
-	projectDir := t.TempDir()
-	repoDir := t.TempDir()
-
-	// Initialize repo
-	manager := repo.NewManagerWithPath(repoDir)
-	if err := manager.Init(); err != nil {
-		t.Fatalf("Failed to init repo: %v", err)
-	}
-
-	// Create and add a skill to the repo
-	tempSkillDir := t.TempDir()
-	skillDir := filepath.Join(tempSkillDir, "fix-skill")
-	if err := os.MkdirAll(skillDir, 0755); err != nil {
-		t.Fatalf("Failed to create skill directory: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\ndescription: A skill to fix\n---\n\n# Fix Skill"), 0644); err != nil {
-		t.Fatalf("Failed to write SKILL.md: %v", err)
-	}
-	if err := manager.AddSkill(skillDir, "file://"+skillDir, "file"); err != nil {
-		t.Fatalf("Failed to add skill to repo: %v", err)
-	}
-
-	// Create tool directory with symlink pointing to wrong repo
-	skillsDir := filepath.Join(projectDir, ".opencode", "skills")
-	if err := os.MkdirAll(skillsDir, 0755); err != nil {
-		t.Fatalf("Failed to create skills directory: %v", err)
-	}
-
-	// Create a "wrong repo" — a valid symlink target but in wrong location
-	wrongRepo := t.TempDir()
-	wrongSkillDir := filepath.Join(wrongRepo, "skills", "fix-skill")
-	if err := os.MkdirAll(wrongSkillDir, 0755); err != nil {
-		t.Fatalf("Failed to create wrong repo skill dir: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(wrongSkillDir, "SKILL.md"), []byte("wrong"), 0644); err != nil {
-		t.Fatalf("Failed to write wrong SKILL.md: %v", err)
-	}
-
-	wrongSymlink := filepath.Join(skillsDir, "fix-skill")
-	if err := os.Symlink(wrongSkillDir, wrongSymlink); err != nil {
-		t.Fatalf("Failed to create wrong-repo symlink: %v", err)
-	}
-
-	// Create a VerifyIssue for the wrong-repo symlink
-	issues := []VerifyIssue{
-		{
-			Resource:    "fix-skill",
-			Tool:        "opencode",
-			IssueType:   "wrong-repo",
-			Description: "Points to wrong repo",
-			Path:        wrongSymlink,
-			Severity:    "warning",
-		},
-	}
-
-	// Call fixVerifyIssues
-	fixVerifyIssues(projectDir, issues, manager)
-
-	// Verify the symlink now points to the correct repo
-	actualTarget, err := os.Readlink(wrongSymlink)
-	if err != nil {
-		t.Fatalf("Failed to read symlink after fix: %v", err)
-	}
-	expectedTarget := filepath.Join(repoDir, "skills", "fix-skill")
-	if actualTarget != expectedTarget {
-		t.Errorf("Symlink points to wrong target after fix: got %s, want %s", actualTarget, expectedTarget)
+	if _, statErr := os.Stat(undeclaredPath); !os.IsNotExist(statErr) {
+		t.Fatalf("Expected undeclared path to be removed by reconcile, stat err: %v", statErr)
 	}
 }
 

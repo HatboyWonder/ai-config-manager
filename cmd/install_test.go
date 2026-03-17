@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/dynatrace-oss/ai-config-manager/v3/pkg/manifest"
 	"github.com/dynatrace-oss/ai-config-manager/v3/pkg/repo"
 	"github.com/dynatrace-oss/ai-config-manager/v3/pkg/resource"
 	"github.com/dynatrace-oss/ai-config-manager/v3/pkg/tools"
@@ -873,5 +874,89 @@ func TestInstallArgProcessing(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestUpdateManifestFromResults_BatchesEligibleResults(t *testing.T) {
+	projectPath := t.TempDir()
+
+	oldSave := installSaveFlag
+	oldNoSave := installNoSaveFlag
+	oldInstallingFromManifest := installingFromManifest
+	t.Cleanup(func() {
+		installSaveFlag = oldSave
+		installNoSaveFlag = oldNoSave
+		installingFromManifest = oldInstallingFromManifest
+	})
+
+	installSaveFlag = true
+	installNoSaveFlag = false
+	installingFromManifest = false
+
+	results := []installResult{
+		{resourceType: resource.Skill, name: "pdf-processing", success: true},
+		{resourceType: resource.Command, name: "test-command", skipped: true},
+		{resourceType: resource.Agent, name: "code-reviewer", success: false},
+		{name: "bad-entry", success: true}, // missing type should be ignored
+	}
+
+	var updateErr error
+	output := captureInstallSummaryOutput(t, func() {
+		updateErr = updateManifestFromResults(projectPath, results)
+	})
+	if updateErr != nil {
+		t.Fatalf("updateManifestFromResults failed: %v", updateErr)
+	}
+
+	manifestPath := filepath.Join(projectPath, manifest.ManifestFileName)
+	m, err := manifest.Load(manifestPath)
+	if err != nil {
+		t.Fatalf("failed to load manifest: %v", err)
+	}
+
+	if len(m.Resources) != 2 {
+		t.Fatalf("manifest resources = %v, want exactly 2 entries", m.Resources)
+	}
+	if !m.Has("skill/pdf-processing") {
+		t.Fatalf("manifest missing skill/pdf-processing: %v", m.Resources)
+	}
+	if !m.Has("command/test-command") {
+		t.Fatalf("manifest missing command/test-command: %v", m.Resources)
+	}
+	if m.Has("agent/code-reviewer") {
+		t.Fatalf("manifest should not include failed resource agent/code-reviewer: %v", m.Resources)
+	}
+
+	if strings.Count(output, "✓ Added to ai.package.yaml") != 1 {
+		t.Fatalf("expected exactly one manifest added message, got output:\n%s", output)
+	}
+}
+
+func TestUpdateManifestFromResults_SkipWhenSaveDisabled(t *testing.T) {
+	projectPath := t.TempDir()
+
+	oldSave := installSaveFlag
+	oldNoSave := installNoSaveFlag
+	oldInstallingFromManifest := installingFromManifest
+	t.Cleanup(func() {
+		installSaveFlag = oldSave
+		installNoSaveFlag = oldNoSave
+		installingFromManifest = oldInstallingFromManifest
+	})
+
+	installSaveFlag = false
+	installNoSaveFlag = false
+	installingFromManifest = false
+
+	results := []installResult{{resourceType: resource.Skill, name: "pdf-processing", success: true}}
+
+	err := updateManifestFromResults(projectPath, results)
+	if err != nil {
+		t.Fatalf("updateManifestFromResults failed: %v", err)
+	}
+
+	manifestPath := filepath.Join(projectPath, manifest.ManifestFileName)
+	if _, statErr := os.Stat(manifestPath); !os.IsNotExist(statErr) {
+		t.Fatalf("expected no manifest file when save disabled, stat err: %v", statErr)
 	}
 }

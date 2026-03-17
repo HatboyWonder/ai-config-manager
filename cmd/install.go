@@ -237,13 +237,8 @@ Examples:
 		}
 
 		// Update manifest for successfully installed or already-installed resources
-		for _, result := range results {
-			if result.success || result.skipped {
-				resourceRef := fmt.Sprintf("%s/%s", result.resourceType, result.name)
-				if err := updateManifest(projectPath, resourceRef); err != nil {
-					fmt.Printf("⚠ Warning: failed to update manifest: %v\n", err)
-				}
-			}
+		if err := updateManifestFromResults(projectPath, results); err != nil {
+			fmt.Printf("⚠ Warning: failed to update manifest: %v\n", err)
 		}
 
 		// Print results
@@ -667,6 +662,52 @@ func updateManifest(projectPath string, resource string) error {
 	}
 
 	// Save manifest
+	if err := m.Save(manifestPath); err != nil {
+		return fmt.Errorf("failed to save manifest: %w", err)
+	}
+
+	fmt.Printf("✓ Added to %s\n", manifest.ManifestFileName)
+	return nil
+}
+
+// updateManifestFromResults batches ai.package.yaml updates from install results.
+// Only successful and skipped resources are added.
+func updateManifestFromResults(projectPath string, results []installResult) error {
+	// Skip if --no-save is set, or if not saving, or if installing from manifest
+	if installNoSaveFlag || !installSaveFlag || installingFromManifest {
+		return nil
+	}
+
+	resources := make([]string, 0, len(results))
+	for _, result := range results {
+		if !result.success && !result.skipped {
+			continue
+		}
+		if result.resourceType == "" || result.name == "" {
+			continue
+		}
+		resources = append(resources, fmt.Sprintf("%s/%s", result.resourceType, result.name))
+	}
+
+	if len(resources) == 0 {
+		return nil
+	}
+
+	manifestPath := filepath.Join(projectPath, manifest.ManifestFileName)
+
+	// Load or create manifest once
+	m, err := manifest.LoadOrCreate(manifestPath)
+	if err != nil {
+		return fmt.Errorf("failed to load/create manifest: %w", err)
+	}
+
+	for _, resourceRef := range resources {
+		if err := m.Add(resourceRef); err != nil {
+			return fmt.Errorf("failed to add resource to manifest: %w", err)
+		}
+	}
+
+	// Save manifest once
 	if err := m.Save(manifestPath); err != nil {
 		return fmt.Errorf("failed to save manifest: %w", err)
 	}
