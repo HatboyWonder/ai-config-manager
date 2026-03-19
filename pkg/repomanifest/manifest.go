@@ -10,6 +10,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/dynatrace-oss/ai-config-manager/v3/pkg/fileutil"
 	"github.com/dynatrace-oss/ai-config-manager/v3/pkg/pattern"
 	"github.com/dynatrace-oss/ai-config-manager/v3/pkg/sourcemetadata"
 )
@@ -74,8 +75,10 @@ func (s *Source) GetMode() string {
 	return ""
 }
 
-// Load loads a manifest from the repository's ai.repo.yaml file
-// If the file doesn't exist, returns an empty manifest (not an error)
+// Load loads a manifest from the repository's ai.repo.yaml file.
+//
+// This function is read-only and never writes to disk.
+// If the file doesn't exist, it returns an empty manifest (not an error).
 func Load(repoPath string) (*Manifest, error) {
 	path := filepath.Join(repoPath, ManifestFileName)
 
@@ -97,12 +100,6 @@ func Load(repoPath string) (*Manifest, error) {
 		return nil, fmt.Errorf("failed to parse manifest YAML: %w", err)
 	}
 
-	// Migrate old format if needed (has Mode, Added, LastSynced in sources)
-	// This migrates from the old format where state was mixed with config
-	if err := migrateIfNeeded(repoPath, &m); err != nil {
-		return nil, fmt.Errorf("failed to migrate manifest: %w", err)
-	}
-
 	// Ensure every source has an in-memory runtime ID. IDs are local-only state
 	// derived from URL/path and are intentionally not persisted in ai.repo.yaml.
 	m.migrateSourceIDs()
@@ -113,6 +110,24 @@ func Load(repoPath string) (*Manifest, error) {
 	}
 
 	return &m, nil
+}
+
+// LoadForMutation loads a manifest and applies legacy migration writes when needed.
+//
+// IMPORTANT: this function may mutate repository-managed state files
+// (ai.repo.yaml and .metadata/sources.json). Callers must hold the repo-wide lock
+// before invoking this method.
+func LoadForMutation(repoPath string) (*Manifest, error) {
+	m, err := Load(repoPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := migrateIfNeeded(repoPath, m); err != nil {
+		return nil, fmt.Errorf("failed to migrate manifest: %w", err)
+	}
+
+	return m, nil
 }
 
 // Save writes the manifest to the repository's ai.repo.yaml file
@@ -139,7 +154,7 @@ func (m *Manifest) Save(repoPath string) error {
 
 	// Write to file
 	path := filepath.Join(repoPath, ManifestFileName)
-	if err := os.WriteFile(path, data, 0644); err != nil {
+	if err := fileutil.AtomicWrite(path, data, 0644); err != nil {
 		return fmt.Errorf("failed to write manifest: %w", err)
 	}
 

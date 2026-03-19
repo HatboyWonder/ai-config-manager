@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dynatrace-oss/ai-config-manager/v3/pkg/fileutil"
 	"github.com/dynatrace-oss/ai-config-manager/v3/pkg/resource"
 )
 
@@ -58,7 +59,7 @@ func Save(metadata *ResourceMetadata, repoPath, sourceName string) error {
 	}
 
 	// Write to file
-	if err := os.WriteFile(metadataPath, data, 0644); err != nil {
+	if err := fileutil.AtomicWrite(metadataPath, data, 0644); err != nil {
 		return fmt.Errorf("failed to write metadata file: %w", err)
 	}
 
@@ -207,7 +208,7 @@ func SavePackageMetadata(metadata *PackageMetadata, repoPath string) error {
 	}
 
 	// Write to file
-	if err := os.WriteFile(metadataPath, data, 0644); err != nil {
+	if err := fileutil.AtomicWrite(metadataPath, data, 0644); err != nil {
 		return fmt.Errorf("failed to write metadata file: %w", err)
 	}
 

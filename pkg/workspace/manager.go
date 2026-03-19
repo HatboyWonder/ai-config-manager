@@ -102,17 +102,13 @@ When requesting a different ref (branch/tag/commit) than last used:
 - Update failures: Leave cache in last known good state, return error
 
 ### 5. Concurrent Access
-- Use file locking (flock) to prevent concurrent modifications
-- Read operations can proceed concurrently
+- Use OS-backed advisory file locks for cache and metadata mutations
 - Write operations (clone, update, remove) are serialized per cache
+- Shared cache-metadata updates are serialized with a dedicated metadata lock
 
-### 6. Invalid Git URLs
-- Validate URL format before operations
-- Return descriptive errors for malformed URLs
-
-### 7. Disk Space Issues
-- Check available disk space before clone
-- Provide clear error messages if insufficient space
+### 6. Invalid/Unavailable Git sources
+- Clone/fetch/checkout failures are surfaced as command errors
+- Callers receive the underlying git failure context
 
 ## Thread Safety
 
@@ -136,6 +132,7 @@ When introducing workspace cache to existing installations:
 */
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -145,11 +142,51 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
+
+	"github.com/dynatrace-oss/ai-config-manager/v3/pkg/fileutil"
+	"github.com/dynatrace-oss/ai-config-manager/v3/pkg/repolock"
 )
+
+const defaultWorkspaceLockAcquireTimeout = 30 * time.Second
 
 // Package-level logger for workspace operations
 var logger *slog.Logger
+
+var testWorkspaceGate statefulWorkspaceGate
+
+type statefulWorkspaceGate struct {
+	mu            sync.Mutex
+	repoReadySeen map[string]bool
+}
+
+func (g *statefulWorkspaceGate) markReady(repoPath string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.repoReadySeen == nil {
+		g.repoReadySeen = make(map[string]bool)
+	}
+	g.repoReadySeen[repoPath] = true
+}
+
+func (g *statefulWorkspaceGate) clearReady(repoPath string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.repoReadySeen == nil {
+		return
+	}
+	delete(g.repoReadySeen, repoPath)
+}
+
+func (g *statefulWorkspaceGate) wasReady(repoPath string) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.repoReadySeen == nil {
+		return false
+	}
+	return g.repoReadySeen[repoPath]
+}
 
 // SetLogger sets the logger for the workspace package.
 // This should be called by the application during initialization.
@@ -157,11 +194,108 @@ func SetLogger(l *slog.Logger) {
 	logger = l
 }
 
+// maybeHoldAfterCacheLock provides deterministic coordination for subprocess
+// workspace contention tests. It is inert unless AIMGR_TEST_WORKSPACE_HOLD_OP
+// matches the requested operation.
+func maybeHoldAfterCacheLock(ctx context.Context, op string, repoPath string) error {
+	holdOp := strings.TrimSpace(os.Getenv("AIMGR_TEST_WORKSPACE_HOLD_OP"))
+	if holdOp == "" || holdOp != op {
+		return nil
+	}
+
+	signalDir := strings.TrimSpace(os.Getenv("AIMGR_TEST_WORKSPACE_SIGNAL_DIR"))
+	if signalDir == "" {
+		return fmt.Errorf("AIMGR_TEST_WORKSPACE_SIGNAL_DIR must be set when AIMGR_TEST_WORKSPACE_HOLD_OP is used")
+	}
+	if err := os.MkdirAll(signalDir, 0755); err != nil {
+		return fmt.Errorf("failed to create workspace test signal directory: %w", err)
+	}
+
+	readyPath := filepath.Join(signalDir, op+".ready")
+	releasePath := filepath.Join(signalDir, op+".release")
+
+	if op == "clone" {
+		testWorkspaceGate.markReady(repoPath)
+	}
+
+	if err := os.WriteFile(readyPath, []byte("ready"), 0644); err != nil {
+		if op == "clone" {
+			testWorkspaceGate.clearReady(repoPath)
+		}
+		return fmt.Errorf("failed to write workspace ready marker: %w", err)
+	}
+
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		if _, err := os.Stat(releasePath); err == nil {
+			if op == "clone" {
+				testWorkspaceGate.clearReady(repoPath)
+			}
+			return nil
+		}
+
+		select {
+		case <-ctx.Done():
+			if op == "clone" {
+				testWorkspaceGate.clearReady(repoPath)
+			}
+			return fmt.Errorf("workspace test hold canceled: %w", ctx.Err())
+		case <-ticker.C:
+		}
+	}
+}
+
+func maybeHoldAfterMetadataLock(ctx context.Context, op string, repoPath string) error {
+	holdOp := strings.TrimSpace(os.Getenv("AIMGR_TEST_WORKSPACE_HOLD_OP"))
+	if holdOp == "" || holdOp != op {
+		return nil
+	}
+
+	if op == "metadata-rmw" {
+		if !testWorkspaceGate.wasReady(repoPath) {
+			return nil
+		}
+	}
+
+	signalDir := strings.TrimSpace(os.Getenv("AIMGR_TEST_WORKSPACE_SIGNAL_DIR"))
+	if signalDir == "" {
+		return fmt.Errorf("AIMGR_TEST_WORKSPACE_SIGNAL_DIR must be set when AIMGR_TEST_WORKSPACE_HOLD_OP is used")
+	}
+	if err := os.MkdirAll(signalDir, 0755); err != nil {
+		return fmt.Errorf("failed to create workspace test signal directory: %w", err)
+	}
+
+	readyPath := filepath.Join(signalDir, op+".ready")
+	releasePath := filepath.Join(signalDir, op+".release")
+	if err := os.WriteFile(readyPath, []byte("ready"), 0644); err != nil {
+		return fmt.Errorf("failed to write workspace metadata ready marker: %w", err)
+	}
+
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		if _, err := os.Stat(releasePath); err == nil {
+			return nil
+		}
+
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("workspace metadata test hold canceled: %w", ctx.Err())
+		case <-ticker.C:
+		}
+	}
+}
+
 // Manager manages the workspace cache for Git repositories.
 // The workspace cache stores cloned Git repositories to avoid redundant clones
 // when multiple resources come from the same repository.
 type Manager struct {
-	workspaceDir string // Path to .workspace directory
+	workspaceDir       string // Path to .workspace directory
+	locks              *repolock.Manager
+	lockAcquireTimeout time.Duration
 }
 
 // CacheEntry represents metadata for a single cached repository.
@@ -183,7 +317,9 @@ type CacheMetadata struct {
 func NewManager(repoPath string) (*Manager, error) {
 	workspaceDir := filepath.Join(repoPath, ".workspace")
 	return &Manager{
-		workspaceDir: workspaceDir,
+		workspaceDir:       workspaceDir,
+		locks:              repolock.NewManager(repoPath),
+		lockAcquireTimeout: defaultWorkspaceLockAcquireTimeout,
 	}, nil
 }
 
@@ -218,6 +354,14 @@ func (m *Manager) Init() error {
 //   - Invalid URL: error returned before any filesystem operations
 //   - Ref not found: error returned with helpful message
 //   - Empty ref: defaults to repository's default branch
+//
+// Locking:
+//   - This method is self-locking for cache mutations. It acquires the per-cache
+//     lock before mutating the cache and acquires workspace metadata lock only for
+//     short metadata read-modify-write sections.
+//   - Callers that already hold the repo lock must not re-acquire it here.
+//   - Lock ordering is preserved as: repo lock (caller) -> cache lock (here) ->
+//     workspace metadata lock (inside metadata update helper).
 func (m *Manager) GetOrClone(url string, ref string) (string, error) {
 	// Ensure workspace is initialized
 	if err := m.Init(); err != nil {
@@ -234,6 +378,19 @@ func (m *Manager) GetOrClone(url string, ref string) (string, error) {
 
 	// Get cache path
 	cachePath := m.getCachePath(url)
+	cacheHash := computeHash(url)
+
+	cacheLock, err := m.acquireCacheLock(context.Background(), cacheHash)
+	if err != nil {
+		return "", fmt.Errorf("failed to acquire cache lock at %s: %w", m.locks.CacheLockPath(cacheHash), err)
+	}
+	defer func() {
+		_ = cacheLock.Unlock()
+	}()
+
+	if err := maybeHoldAfterCacheLock(context.Background(), "clone", filepath.Dir(m.workspaceDir)); err != nil {
+		return "", err
+	}
 
 	// Log cache lookup
 	if logger != nil {
@@ -329,6 +486,12 @@ func (m *Manager) GetOrClone(url string, ref string) (string, error) {
 //   - Ref doesn't exist: error returned
 //   - Uncommitted changes: stashed before update, restored after
 //   - Empty ref: updates current branch
+//
+// Locking:
+//   - This method is self-locking for cache mutations. It acquires the per-cache
+//     lock for the full update section (stash/fetch/checkout/reset/pull/pop).
+//   - Workspace metadata lock is acquired only for the short metadata update.
+//   - Callers that already hold the repo lock must not re-acquire it here.
 func (m *Manager) Update(url string, ref string) error {
 	// Validate inputs
 	if url == "" {
@@ -337,6 +500,19 @@ func (m *Manager) Update(url string, ref string) error {
 
 	// Get cache path
 	cachePath := m.getCachePath(url)
+	cacheHash := computeHash(url)
+
+	cacheLock, err := m.acquireCacheLock(context.Background(), cacheHash)
+	if err != nil {
+		return fmt.Errorf("failed to acquire cache lock at %s: %w", m.locks.CacheLockPath(cacheHash), err)
+	}
+	defer func() {
+		_ = cacheLock.Unlock()
+	}()
+
+	if err := maybeHoldAfterCacheLock(context.Background(), "update", filepath.Dir(m.workspaceDir)); err != nil {
+		return err
+	}
 
 	// Log update operation
 	if logger != nil {
@@ -510,7 +686,8 @@ func (m *Manager) Prune(referencedURLs []string) ([]string, error) {
 		}
 	}
 
-	// Remove each unreferenced cache
+	// Remove each unreferenced cache one at a time. Remove() acquires only the
+	// current cache lock, so prune never holds multiple cache locks concurrently.
 	var removed []string
 	for _, url := range unreferenced {
 		if err := m.Remove(url); err != nil {
@@ -541,6 +718,12 @@ func (m *Manager) Prune(referencedURLs []string) ([]string, error) {
 // Safety:
 //   - Acquires lock before removal to prevent concurrent access
 //   - Validates hash before removal (sanity check)
+//
+// Locking:
+//   - This method is self-locking for cache mutation. It acquires the per-cache
+//     lock for the full remove section and workspace metadata lock only for the
+//     metadata read-modify-write.
+//   - Callers that already hold the repo lock must not re-acquire it here.
 func (m *Manager) Remove(url string) error {
 	// Normalize URL
 	normalized := normalizeURL(url)
@@ -550,6 +733,19 @@ func (m *Manager) Remove(url string) error {
 
 	// Get cache path
 	cachePath := m.getCachePath(normalized)
+	cacheHash := computeHash(normalized)
+
+	cacheLock, err := m.acquireCacheLock(context.Background(), cacheHash)
+	if err != nil {
+		return fmt.Errorf("failed to acquire cache lock at %s: %w", m.locks.CacheLockPath(cacheHash), err)
+	}
+	defer func() {
+		_ = cacheLock.Unlock()
+	}()
+
+	if err := maybeHoldAfterCacheLock(context.Background(), "remove", filepath.Dir(m.workspaceDir)); err != nil {
+		return err
+	}
 
 	// Check if cache exists
 	if _, err := os.Stat(cachePath); err != nil {
@@ -564,23 +760,20 @@ func (m *Manager) Remove(url string) error {
 		return fmt.Errorf("failed to remove cache directory: %w", err)
 	}
 
-	// Update metadata
-	metadata, err := m.loadMetadata()
-	if err != nil {
-		// If we can't load metadata, just log warning (removal succeeded)
-		fmt.Fprintf(os.Stderr, "warning: failed to load metadata: %v\n", err)
-		return nil
-	}
-
-	hash := computeHash(normalized)
-	delete(metadata.Caches, hash)
-
-	if err := m.saveMetadata(metadata); err != nil {
+	if err := m.removeMetadataEntry(normalized); err != nil {
 		// Log warning but don't fail (removal succeeded)
 		fmt.Fprintf(os.Stderr, "warning: failed to update metadata: %v\n", err)
 	}
 
 	return nil
+}
+
+func (m *Manager) acquireCacheLock(ctx context.Context, cacheHash string) (*repolock.Lock, error) {
+	return repolock.Acquire(ctx, m.locks.CacheLockPath(cacheHash), m.lockAcquireTimeout)
+}
+
+func (m *Manager) acquireWorkspaceMetadataLock(ctx context.Context) (*repolock.Lock, error) {
+	return repolock.Acquire(ctx, m.locks.WorkspaceMetadataLockPath(), m.lockAcquireTimeout)
 }
 
 // runGitCommand executes a git command with comprehensive logging.
@@ -707,6 +900,12 @@ func (m *Manager) isValidCache(cachePath string) bool {
 // loadMetadata loads the cache metadata from .cache-metadata.json.
 // Returns nil if the file doesn't exist (not an error).
 func (m *Manager) loadMetadata() (*CacheMetadata, error) {
+	return m.loadMetadataUnlocked()
+}
+
+// loadMetadataUnlocked loads cache metadata without taking workspace metadata lock.
+// Callers must provide any required synchronization.
+func (m *Manager) loadMetadataUnlocked() (*CacheMetadata, error) {
 	metadataPath := filepath.Join(m.workspaceDir, ".cache-metadata.json")
 
 	data, err := os.ReadFile(metadataPath)
@@ -731,6 +930,12 @@ func (m *Manager) loadMetadata() (*CacheMetadata, error) {
 
 // saveMetadata saves the cache metadata to .cache-metadata.json.
 func (m *Manager) saveMetadata(metadata *CacheMetadata) error {
+	return m.saveMetadataUnlocked(metadata)
+}
+
+// saveMetadataUnlocked writes metadata without taking workspace metadata lock.
+// Callers must provide any required synchronization.
+func (m *Manager) saveMetadataUnlocked(metadata *CacheMetadata) error {
 	metadataPath := filepath.Join(m.workspaceDir, ".cache-metadata.json")
 
 	data, err := json.MarshalIndent(metadata, "", "  ")
@@ -738,7 +943,7 @@ func (m *Manager) saveMetadata(metadata *CacheMetadata) error {
 		return fmt.Errorf("failed to marshal cache metadata: %w", err)
 	}
 
-	if err := os.WriteFile(metadataPath, data, 0644); err != nil {
+	if err := fileutil.AtomicWrite(metadataPath, data, 0644); err != nil {
 		return fmt.Errorf("failed to write cache metadata: %w", err)
 	}
 
@@ -747,7 +952,19 @@ func (m *Manager) saveMetadata(metadata *CacheMetadata) error {
 
 // updateMetadataEntry updates the metadata for a specific cache entry.
 func (m *Manager) updateMetadataEntry(url string, ref string, updateType string) error {
-	metadata, err := m.loadMetadata()
+	metadataLock, err := m.acquireWorkspaceMetadataLock(context.Background())
+	if err != nil {
+		return fmt.Errorf("failed to acquire workspace metadata lock at %s: %w", m.locks.WorkspaceMetadataLockPath(), err)
+	}
+	defer func() {
+		_ = metadataLock.Unlock()
+	}()
+
+	if err := maybeHoldAfterMetadataLock(context.Background(), "metadata-rmw", filepath.Dir(m.workspaceDir)); err != nil {
+		return err
+	}
+
+	metadata, err := m.loadMetadataUnlocked()
 	if err != nil {
 		return err
 	}
@@ -772,7 +989,26 @@ func (m *Manager) updateMetadataEntry(url string, ref string, updateType string)
 
 	metadata.Caches[hash] = entry
 
-	return m.saveMetadata(metadata)
+	return m.saveMetadataUnlocked(metadata)
+}
+
+func (m *Manager) removeMetadataEntry(url string) error {
+	metadataLock, err := m.acquireWorkspaceMetadataLock(context.Background())
+	if err != nil {
+		return fmt.Errorf("failed to acquire workspace metadata lock at %s: %w", m.locks.WorkspaceMetadataLockPath(), err)
+	}
+	defer func() {
+		_ = metadataLock.Unlock()
+	}()
+
+	metadata, err := m.loadMetadataUnlocked()
+	if err != nil {
+		return err
+	}
+
+	delete(metadata.Caches, computeHash(url))
+
+	return m.saveMetadataUnlocked(metadata)
 }
 
 // cloneRepo clones a Git repository to the specified cache path.

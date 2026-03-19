@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -68,6 +69,18 @@ func runRemove(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	repoLock, err := mgr.AcquireRepoLock(cmd.Context())
+	if err != nil {
+		return fmt.Errorf("failed to acquire repository lock at %s: %w", mgr.RepoLockPath(), err)
+	}
+	defer func() {
+		_ = repoLock.Unlock()
+	}()
+
+	if err := maybeHoldAfterRepoLock(cmd.Context(), "remove"); err != nil {
+		return err
+	}
+
 	return performRemove(mgr, nameOrPathOrURL, removeDryRunFlag, removeKeepResourcesFlag)
 }
 
@@ -76,7 +89,7 @@ func performRemove(mgr *repo.Manager, nameOrPathOrURL string, dryRun bool, keepR
 	repoPath := mgr.GetRepoPath()
 
 	// Load manifest
-	manifest, err := repomanifest.Load(repoPath)
+	manifest, err := repomanifest.LoadForMutation(repoPath)
 	if err != nil {
 		return fmt.Errorf("failed to load manifest: %w", err)
 	}
@@ -168,7 +181,10 @@ func performRemove(mgr *repo.Manager, nameOrPathOrURL string, dryRun bool, keepR
 	}
 
 	// Commit manifest changes to git
-	if err := mgr.CommitChanges("aimgr: remove source from manifest"); err != nil {
+	if err := mgr.CommitChangesForPaths("aimgr: remove source from manifest", []string{
+		repomanifest.ManifestFileName,
+		filepath.Join(".metadata", "sources.json"),
+	}); err != nil {
 		// Don't fail if commit fails (e.g., not a git repo)
 		fmt.Fprintf(os.Stderr, "Warning: Failed to commit manifest: %v\n", err)
 	}

@@ -132,6 +132,14 @@ Examples:
 
 		// Print deprecation warning if --fix is used
 		if verifyFix {
+			repoLock, lockErr := manager.AcquireRepoLock(cmd.Context())
+			if lockErr != nil {
+				return fmt.Errorf("failed to acquire repository lock at %s: %w", manager.RepoLockPath(), lockErr)
+			}
+			defer func() {
+				_ = repoLock.Unlock()
+			}()
+
 			// TODO: Remove --fix flag in a future version. Replaced by 'aimgr repo repair'.
 			fmt.Fprintln(os.Stderr, "Warning: --fix is deprecated. Use 'aimgr repo repair' instead.")
 		}

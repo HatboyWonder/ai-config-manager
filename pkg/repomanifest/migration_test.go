@@ -298,3 +298,71 @@ func TestMigrateSourceIDs_MethodDirectly(t *testing.T) {
 		}
 	})
 }
+
+func TestLoad_DoesNotMigrateLegacyFormatOnRead(t *testing.T) {
+	repoPath := t.TempDir()
+	manifestPath := filepath.Join(repoPath, ManifestFileName)
+
+	legacy := `version: 1
+sources:
+  - name: legacy-source
+    path: /tmp/legacy
+    mode: symlink
+    added: 2026-01-01T00:00:00Z
+    last_synced: 2026-01-02T00:00:00Z
+`
+	if err := os.WriteFile(manifestPath, []byte(legacy), 0644); err != nil {
+		t.Fatalf("failed to write legacy manifest: %v", err)
+	}
+
+	if _, err := Load(repoPath); err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(repoPath, ".metadata", "sources.json")); !os.IsNotExist(err) {
+		t.Fatalf("Load() should not write source metadata on read-only path")
+	}
+
+	raw, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatalf("failed to read manifest after Load(): %v", err)
+	}
+
+	if !strings.Contains(string(raw), "mode:") || !strings.Contains(string(raw), "added:") {
+		t.Fatalf("Load() unexpectedly rewrote legacy manifest:\n%s", string(raw))
+	}
+}
+
+func TestLoadForMutation_MigratesLegacyFormat(t *testing.T) {
+	repoPath := t.TempDir()
+	manifestPath := filepath.Join(repoPath, ManifestFileName)
+
+	legacy := `version: 1
+sources:
+  - name: legacy-source
+    path: /tmp/legacy
+    mode: symlink
+    added: 2026-01-01T00:00:00Z
+    last_synced: 2026-01-02T00:00:00Z
+`
+	if err := os.WriteFile(manifestPath, []byte(legacy), 0644); err != nil {
+		t.Fatalf("failed to write legacy manifest: %v", err)
+	}
+
+	if _, err := LoadForMutation(repoPath); err != nil {
+		t.Fatalf("LoadForMutation() error = %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(repoPath, ".metadata", "sources.json")); err != nil {
+		t.Fatalf("expected migration to write source metadata: %v", err)
+	}
+
+	raw, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatalf("failed to read manifest after LoadForMutation(): %v", err)
+	}
+
+	if strings.Contains(string(raw), "mode:") || strings.Contains(string(raw), "added:") || strings.Contains(string(raw), "last_synced:") {
+		t.Fatalf("expected legacy fields removed after migration, got:\n%s", string(raw))
+	}
+}

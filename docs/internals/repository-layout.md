@@ -117,6 +117,24 @@ This metadata enables:
 - Knowing when resources were last updated
 - Identifying orphaned resources after source removal
 
+### Atomic replacement for repo-managed state files
+
+Repo-managed state files are persisted with atomic replacement semantics
+(temp file in same directory -> file `fsync` -> rename replacement ->
+parent-directory `fsync` where supported), rather than direct in-place writes.
+
+This applies to:
+
+- `ai.repo.yaml`
+- `.metadata/sources.json`
+- resource metadata under `.metadata/...`
+- `.workspace/.cache-metadata.json`
+
+Locking and atomic writes serve different purposes:
+
+- locks serialize concurrent mutation paths,
+- atomic replacement reduces risk of partial-file state after crashes.
+
 ### .modifications/ - Tool-Specific Variants
 
 The `.modifications/` directory contains transformed versions of resources with tool-specific field values. This is generated automatically when [field mappings](../user-guide/configuration.md#field-mappings) are configured.

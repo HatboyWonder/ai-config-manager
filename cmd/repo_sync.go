@@ -145,12 +145,17 @@ func collectResourcesBySource(repoPath string) (map[string][]resourceInfo, error
 				continue
 			}
 
-			// Extract resource name from filename: <name>-metadata.json
-			name := strings.TrimSuffix(entry.Name(), "-metadata.json")
+			// Extract fallback name from filename: <name>-metadata.json
+			fallbackName := strings.TrimSuffix(entry.Name(), "-metadata.json")
 
-			meta, err := resmeta.Load(name, rt.resType, repoPath)
+			meta, err := resmeta.Load(fallbackName, rt.resType, repoPath)
 			if err != nil {
 				continue // Skip unreadable metadata
+			}
+
+			name := meta.Name
+			if name == "" {
+				name = fallbackName
 			}
 
 			key := meta.SourceID
@@ -174,10 +179,15 @@ func collectResourcesBySource(repoPath string) (map[string][]resourceInfo, error
 				continue
 			}
 
-			name := strings.TrimSuffix(entry.Name(), "-metadata.json")
-			pkgMeta, err := resmeta.LoadPackageMetadata(name, repoPath)
+			fallbackName := strings.TrimSuffix(entry.Name(), "-metadata.json")
+			pkgMeta, err := resmeta.LoadPackageMetadata(fallbackName, repoPath)
 			if err != nil {
 				continue
+			}
+
+			name := pkgMeta.Name
+			if name == "" {
+				name = fallbackName
 			}
 
 			key := pkgMeta.SourceID
@@ -620,7 +630,9 @@ func syncSaveMetadata(manager *repo.Manager, metadata *sourcemetadata.SourceMeta
 		return []string{fmt.Sprintf("failed to save metadata: %v", err)}
 	}
 	// Commit metadata changes to git
-	if err := manager.CommitChanges("aimgr: update sync timestamps"); err != nil {
+	if err := manager.CommitChangesForPaths("aimgr: update sync timestamps", []string{
+		filepath.Join(".metadata", "sources.json"),
+	}); err != nil {
 		// Don't fail if commit fails (e.g., not a git repo)
 		return []string{fmt.Sprintf("failed to commit metadata: %v", err)}
 	}
@@ -699,8 +711,20 @@ func runSync(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to create repo manager: %w", err)
 	}
 
+	repoLock, err := manager.AcquireRepoLock(cmd.Context())
+	if err != nil {
+		return fmt.Errorf("failed to acquire repository lock at %s: %w", manager.RepoLockPath(), err)
+	}
+	defer func() {
+		_ = repoLock.Unlock()
+	}()
+
+	if err := maybeHoldAfterRepoLock(cmd.Context(), "sync"); err != nil {
+		return err
+	}
+
 	// Load manifest from ai.repo.yaml
-	manifest, err := repomanifest.Load(manager.GetRepoPath())
+	manifest, err := repomanifest.LoadForMutation(manager.GetRepoPath())
 	if err != nil {
 		return fmt.Errorf("failed to load manifest: %w", err)
 	}

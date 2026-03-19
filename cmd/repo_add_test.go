@@ -5,11 +5,58 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/dynatrace-oss/ai-config-manager/v3/pkg/discovery"
+	"github.com/dynatrace-oss/ai-config-manager/v3/pkg/repo"
 )
+
+func gitOutput(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+
+	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s failed: %v\n%s", strings.Join(args, " "), err, string(output))
+	}
+
+	return string(output)
+}
+
+func withRepoAddFlagsReset(t *testing.T, fn func()) {
+	t.Helper()
+
+	originalForce := forceFlag
+	originalSkip := skipExistingFlag
+	originalDryRun := dryRunFlag
+	originalFilters := append([]string(nil), filterFlags...)
+	originalFormat := addFormatFlag
+	originalName := nameFlag
+	originalSilent := syncSilentMode
+
+	forceFlag = false
+	skipExistingFlag = false
+	dryRunFlag = false
+	filterFlags = nil
+	addFormatFlag = "table"
+	nameFlag = ""
+	syncSilentMode = false
+
+	defer func() {
+		forceFlag = originalForce
+		skipExistingFlag = originalSkip
+		dryRunFlag = originalDryRun
+		filterFlags = originalFilters
+		addFormatFlag = originalFormat
+		nameFlag = originalName
+		syncSilentMode = originalSilent
+	}()
+
+	fn()
+}
 
 // TestPrintDiscoveryErrors_Deduplication verifies that duplicate errors for the same path are deduplicated
 func TestPrintDiscoveryErrors_Deduplication(t *testing.T) {
@@ -149,5 +196,57 @@ func TestPrintDiscoveryErrors_OutputFormat(t *testing.T) {
 		if !strings.Contains(output, elem) {
 			t.Errorf("Expected output to contain %q, but it didn't.\nOutput:\n%s", elem, output)
 		}
+	}
+}
+
+func TestRepoAdd_ManifestCommitIsScopedToManifestFiles(t *testing.T) {
+	repoPath := t.TempDir()
+	t.Setenv("AIMGR_REPO_PATH", repoPath)
+
+	manager := repo.NewManagerWithPath(repoPath)
+	if err := manager.Init(); err != nil {
+		t.Fatalf("failed to init repo: %v", err)
+	}
+
+	unrelated := filepath.Join(repoPath, "unrelated.txt")
+	if err := os.WriteFile(unrelated, []byte("base\n"), 0644); err != nil {
+		t.Fatalf("failed to create unrelated file: %v", err)
+	}
+	if err := manager.CommitChangesForPaths("test: add unrelated file", []string{"unrelated.txt"}); err != nil {
+		t.Fatalf("failed to commit unrelated baseline: %v", err)
+	}
+	if err := os.WriteFile(unrelated, []byte("base\nlocal change\n"), 0644); err != nil {
+		t.Fatalf("failed to modify unrelated file: %v", err)
+	}
+
+	sourceDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(sourceDir, "commands"), 0755); err != nil {
+		t.Fatalf("failed to create source commands dir: %v", err)
+	}
+	cmdContent := "---\ndescription: Add test command\n---\n# add-test\n"
+	if err := os.WriteFile(filepath.Join(sourceDir, "commands", "add-test.md"), []byte(cmdContent), 0644); err != nil {
+		t.Fatalf("failed to write source command: %v", err)
+	}
+
+	withRepoAddFlagsReset(t, func() {
+		if err := repoAddCmd.RunE(repoAddCmd, []string{"local:" + sourceDir}); err != nil {
+			t.Fatalf("repo add failed: %v", err)
+		}
+	})
+
+	status := gitOutput(t, repoPath, "status", "--porcelain")
+	if !strings.Contains(status, " M unrelated.txt") {
+		t.Fatalf("expected unrelated.txt to remain unstaged after repo add, status:\n%s", status)
+	}
+
+	manifestCommitFiles := gitOutput(t, repoPath, "show", "--name-only", "--pretty=format:", "HEAD")
+	if !strings.Contains(manifestCommitFiles, "ai.repo.yaml") {
+		t.Fatalf("expected manifest tracking commit to include ai.repo.yaml, got:\n%s", manifestCommitFiles)
+	}
+	if !strings.Contains(manifestCommitFiles, ".metadata/sources.json") {
+		t.Fatalf("expected manifest tracking commit to include .metadata/sources.json, got:\n%s", manifestCommitFiles)
+	}
+	if strings.Contains(manifestCommitFiles, "unrelated.txt") {
+		t.Fatalf("manifest tracking commit must not include unrelated.txt, got:\n%s", manifestCommitFiles)
 	}
 }

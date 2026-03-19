@@ -45,6 +45,18 @@ Examples:
 			return err
 		}
 
+		repoLock, err := mgr.AcquireRepoLock(cmd.Context())
+		if err != nil {
+			return fmt.Errorf("failed to acquire repository lock at %s: %w", mgr.RepoLockPath(), err)
+		}
+		defer func() {
+			_ = repoLock.Unlock()
+		}()
+
+		if err := maybeHoldAfterRepoLock(cmd.Context(), "init"); err != nil {
+			return err
+		}
+
 		// Init() handles everything: directories, git init, .gitignore, initial commit
 		if err := mgr.Init(); err != nil {
 			return fmt.Errorf("failed to initialize repository: %w", err)

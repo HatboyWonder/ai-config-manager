@@ -1,16 +1,19 @@
 package repo
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/adrg/xdg"
 	"github.com/dynatrace-oss/ai-config-manager/v3/pkg/config"
 	"github.com/dynatrace-oss/ai-config-manager/v3/pkg/logging"
+	"github.com/dynatrace-oss/ai-config-manager/v3/pkg/repolock"
 	"github.com/dynatrace-oss/ai-config-manager/v3/pkg/repomanifest"
 )
 
@@ -19,6 +22,7 @@ type Manager struct {
 	repoPath string
 	logger   *slog.Logger
 	logLevel slog.Level
+	locks    *repolock.Manager
 }
 
 // NewManager creates a new repository manager
@@ -35,6 +39,7 @@ func NewManager() (*Manager, error) {
 		m := &Manager{
 			repoPath: repoPath,
 			logLevel: slog.LevelInfo, // Default to Info
+			locks:    repolock.NewManager(repoPath),
 		}
 		m.initLogger()
 		return m, nil
@@ -48,6 +53,7 @@ func NewManager() (*Manager, error) {
 		m := &Manager{
 			repoPath: cfg.Repo.Path,
 			logLevel: slog.LevelInfo, // Default to Info
+			locks:    repolock.NewManager(cfg.Repo.Path),
 		}
 		m.initLogger()
 		return m, nil
@@ -59,6 +65,7 @@ func NewManager() (*Manager, error) {
 	m := &Manager{
 		repoPath: repoPath,
 		logLevel: slog.LevelInfo, // Default to Info
+		locks:    repolock.NewManager(repoPath),
 	}
 	m.initLogger()
 	return m, nil
@@ -69,6 +76,7 @@ func NewManagerWithPath(repoPath string) *Manager {
 	m := &Manager{
 		repoPath: repoPath,
 		logLevel: slog.LevelDebug, // Tests use Debug level
+		locks:    repolock.NewManager(repoPath),
 	}
 	m.initLogger()
 	return m
@@ -103,6 +111,56 @@ func (m *Manager) GetLogger() *slog.Logger {
 // GetRepoPath returns the repository root path
 func (m *Manager) GetRepoPath() string {
 	return m.repoPath
+}
+
+// Locking conventions for repo mutation (foundational contract):
+//
+// - Lock ordering is always: repo lock -> cache lock -> workspace metadata lock.
+// - Repo lock is non-reentrant by design. Do not attempt to acquire repo lock
+//   from helper methods that can be called by already-locked operations.
+// - Top-level CLI command handlers should hold the outer repo lock and call
+//   internal helpers (including Init) inside that critical section.
+
+// AcquireRepoLock acquires the repository-wide cross-process lock with default
+// CLI semantics: blocking up to 30s and honoring context cancellation.
+func (m *Manager) AcquireRepoLock(ctx context.Context) (*repolock.Lock, error) {
+	return m.locks.AcquireRepoLock(ctx)
+}
+
+// AcquireRepoLockWithTimeout acquires the repository-wide lock with a caller
+// provided timeout.
+func (m *Manager) AcquireRepoLockWithTimeout(ctx context.Context, timeout time.Duration) (*repolock.Lock, error) {
+	return repolock.Acquire(ctx, m.locks.RepoLockPath(), timeout)
+}
+
+// TryAcquireRepoLock attempts to acquire the repository-wide lock without waiting.
+func (m *Manager) TryAcquireRepoLock() (*repolock.Lock, bool, error) {
+	return m.locks.TryAcquireRepoLock()
+}
+
+// AcquireWorkspaceMetadataLock acquires the shared workspace metadata lock.
+func (m *Manager) AcquireWorkspaceMetadataLock(ctx context.Context) (*repolock.Lock, error) {
+	return m.locks.AcquireWorkspaceMetadataLock(ctx)
+}
+
+// AcquireCacheLock acquires the per-cache lock for a specific cache hash.
+func (m *Manager) AcquireCacheLock(ctx context.Context, cacheHash string) (*repolock.Lock, error) {
+	return m.locks.AcquireCacheLock(ctx, cacheHash)
+}
+
+// RepoLockPath returns the repo lock file path under .workspace/locks.
+func (m *Manager) RepoLockPath() string {
+	return m.locks.RepoLockPath()
+}
+
+// WorkspaceMetadataLockPath returns the workspace metadata lock file path.
+func (m *Manager) WorkspaceMetadataLockPath() string {
+	return m.locks.WorkspaceMetadataLockPath()
+}
+
+// CacheLockPath returns the per-cache lock path for the given cache hash.
+func (m *Manager) CacheLockPath(cacheHash string) string {
+	return m.locks.CacheLockPath(cacheHash)
 }
 
 // Init initializes the repository directory structure and git repository.

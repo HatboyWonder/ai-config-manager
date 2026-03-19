@@ -54,6 +54,18 @@ func runDrop(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	repoLock, err := mgr.AcquireRepoLock(cmd.Context())
+	if err != nil {
+		return fmt.Errorf("failed to acquire repository lock at %s: %w", mgr.RepoLockPath(), err)
+	}
+	defer func() {
+		_ = repoLock.Unlock()
+	}()
+
+	if err := maybeHoldAfterRepoLock(cmd.Context(), "drop"); err != nil {
+		return err
+	}
+
 	if fullDelete {
 		// Full delete mode: remove entire repository directory
 		return performFullDelete(mgr, force)

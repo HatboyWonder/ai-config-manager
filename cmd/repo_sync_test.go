@@ -210,6 +210,24 @@ func createTestSource(t *testing.T) string {
 	return sourceDir
 }
 
+func createNestedCommandTestSource(t *testing.T) string {
+	t.Helper()
+
+	sourceDir := t.TempDir()
+	commandDir := filepath.Join(sourceDir, "commands", "opencode-coder")
+	if err := os.MkdirAll(commandDir, 0755); err != nil {
+		t.Fatalf("failed to create nested command dir: %v", err)
+	}
+
+	content := "---\ndescription: nested command\n---\n# status\n"
+	path := filepath.Join(commandDir, "status.md")
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatalf("failed to create nested command: %v", err)
+	}
+
+	return sourceDir
+}
+
 // setupTestManifest creates a test repository with ai.repo.yaml
 // Returns the repo path for verification and a cleanup function
 func setupTestManifest(t *testing.T, sources []*repomanifest.Source) (string, func()) {
@@ -980,6 +998,64 @@ func TestRunSync_MetadataCommitted(t *testing.T) {
 	}
 }
 
+func TestRunSync_MetadataCommitIsScopedToSourcesMetadata(t *testing.T) {
+	source1 := createTestSource(t)
+
+	sources := []*repomanifest.Source{{
+		Name: "test-source-1",
+		Path: source1,
+	}}
+	repoPath, cleanup := setupTestManifest(t, sources)
+	defer cleanup()
+
+	manager, err := repo.NewManager()
+	if err != nil {
+		t.Fatalf("failed to create manager: %v", err)
+	}
+	if err := manager.Init(); err != nil {
+		t.Fatalf("failed to initialize git repo: %v", err)
+	}
+
+	unrelated := filepath.Join(repoPath, "sync-unrelated.txt")
+	if err := os.WriteFile(unrelated, []byte("baseline\n"), 0644); err != nil {
+		t.Fatalf("failed to write unrelated file: %v", err)
+	}
+	if err := manager.CommitChangesForPaths("test: add unrelated file", []string{"sync-unrelated.txt"}); err != nil {
+		t.Fatalf("failed to commit unrelated baseline: %v", err)
+	}
+	if err := os.WriteFile(unrelated, []byte("baseline\nlocal change\n"), 0644); err != nil {
+		t.Fatalf("failed to modify unrelated file: %v", err)
+	}
+
+	err = runSync(syncCmd, []string{})
+	if err != nil {
+		t.Fatalf("sync command failed: %v", err)
+	}
+
+	showCmd := exec.Command("git", "-C", repoPath, "show", "--name-only", "--pretty=format:", "HEAD")
+	showOut, err := showCmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("failed to inspect latest commit: %v", err)
+	}
+	commitFiles := string(showOut)
+	if !strings.Contains(commitFiles, ".metadata/sources.json") {
+		t.Fatalf("expected sync metadata commit to include .metadata/sources.json, got:\n%s", commitFiles)
+	}
+	if strings.Contains(commitFiles, "sync-unrelated.txt") {
+		t.Fatalf("sync metadata commit should not include unrelated file, got:\n%s", commitFiles)
+	}
+
+	statusCmd := exec.Command("git", "-C", repoPath, "status", "--porcelain")
+	statusOut, err := statusCmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("failed to get git status: %v", err)
+	}
+	status := string(statusOut)
+	if !strings.Contains(status, " M sync-unrelated.txt") {
+		t.Fatalf("expected unrelated file to remain modified after sync, status:\n%s", status)
+	}
+}
+
 // TestScanSourceResources_DiscoversAllTypes tests that scanSourceResources
 // finds all four resource types (commands, skills, agents, packages)
 func TestScanSourceResources_DiscoversAllTypes(t *testing.T) {
@@ -1458,6 +1534,106 @@ func TestResolveSourceDisplayName_FallsBackToSourceKey(t *testing.T) {
 	got := resolveSourceDisplayName("src-unknown", map[string]string{})
 	if got != "src-unknown" {
 		t.Fatalf("resolveSourceDisplayName() = %q, want %q", got, "src-unknown")
+	}
+}
+
+func TestCollectResourcesBySource_UsesMetadataNameForNestedCommands(t *testing.T) {
+	repoPath := t.TempDir()
+	mgr := repo.NewManagerWithPath(repoPath)
+	if err := mgr.Init(); err != nil {
+		t.Fatalf("failed to init repo: %v", err)
+	}
+
+	sourceDir := createNestedCommandTestSource(t)
+	commandPath := filepath.Join(sourceDir, "commands", "opencode-coder", "status.md")
+	if err := mgr.AddCommand(commandPath, "file://"+sourceDir, "local"); err != nil {
+		t.Fatalf("failed to add nested command: %v", err)
+	}
+
+	metaPath := filepath.Join(repoPath, ".metadata", "commands", "opencode-coder-status-metadata.json")
+	if _, err := os.Stat(metaPath); err != nil {
+		t.Fatalf("expected nested metadata file to exist: %v", err)
+	}
+
+	bySource, err := collectResourcesBySource(repoPath)
+	if err != nil {
+		t.Fatalf("collectResourcesBySource() error = %v", err)
+	}
+
+	if len(bySource) != 1 {
+		t.Fatalf("expected exactly 1 source entry, got %#v", bySource)
+	}
+
+	var resources []resourceInfo
+	for _, res := range bySource {
+		resources = res
+	}
+
+	if len(resources) != 1 {
+		t.Fatalf("expected 1 resource, got %d", len(resources))
+	}
+
+	if resources[0].Name != "opencode-coder/status" {
+		t.Fatalf("resource name = %q, want %q", resources[0].Name, "opencode-coder/status")
+	}
+}
+
+func TestRunSync_NestedCommandsRemainTrackedAcrossRepeatedSyncs(t *testing.T) {
+	sourceDir := createNestedCommandTestSource(t)
+	sources := []*repomanifest.Source{{
+		Name: "open-coder",
+		Path: sourceDir,
+	}}
+	repoPath, cleanup := setupTestManifest(t, sources)
+	defer cleanup()
+
+	if err := runSync(syncCmd, []string{}); err != nil {
+		t.Fatalf("first sync failed: %v", err)
+	}
+
+	if err := runSync(syncCmd, []string{}); err != nil {
+		t.Fatalf("second sync failed: %v", err)
+	}
+
+	metaPath := filepath.Join(repoPath, ".metadata", "commands", "opencode-coder-status-metadata.json")
+	if _, err := os.Stat(metaPath); err != nil {
+		t.Fatalf("expected metadata to remain after repeated syncs: %v", err)
+	}
+
+	manifest, err := repomanifest.Load(repoPath)
+	if err != nil {
+		t.Fatalf("failed to load manifest: %v", err)
+	}
+
+	metadata, err := sourcemetadata.Load(repoPath)
+	if err != nil {
+		t.Fatalf("failed to load source metadata: %v", err)
+	}
+
+	sourceDisplayNames := buildSourceDisplayNames(manifest.Sources)
+	preSyncResources, err := collectResourcesBySource(repoPath)
+	if err != nil {
+		t.Fatalf("failed to collect pre-sync resources: %v", err)
+	}
+
+	removed, warnings := detectRemovedForSource(manifest.Sources[0], sourceDir, repoPath, preSyncResources)
+	if len(warnings) != 0 {
+		t.Fatalf("unexpected warnings: %v", warnings)
+	}
+	if len(removed) != 0 {
+		t.Fatalf("expected no removed resources, got %#v", removed)
+	}
+
+	state, ok := metadata.Sources["open-coder"]
+	if !ok {
+		t.Fatalf("expected source metadata for open-coder")
+	}
+	if state.LastSynced.IsZero() {
+		t.Fatalf("expected open-coder source to have a last_synced timestamp")
+	}
+
+	if sourceDisplayNames[manifest.Sources[0].Name] != "open-coder" {
+		t.Fatalf("expected display name for source %q", manifest.Sources[0].Name)
 	}
 }
 

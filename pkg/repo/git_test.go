@@ -368,3 +368,56 @@ description: A test command
 		t.Errorf("Git log changed during dry run:\nBefore: %q\nAfter: %q", initialLog, finalLog)
 	}
 }
+
+func TestCommitChangesForPaths_DoesNotCommitUnrelatedChanges(t *testing.T) {
+	tmpDir := t.TempDir()
+	setupGitRepo(t, tmpDir)
+	manager := NewManagerWithPath(tmpDir)
+
+	if err := manager.Init(); err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	commitFile := filepath.Join(tmpDir, "commit.txt")
+	if err := os.WriteFile(commitFile, []byte("commit me\n"), 0644); err != nil {
+		t.Fatalf("failed to write commit file: %v", err)
+	}
+
+	unrelated := filepath.Join(tmpDir, "unrelated.txt")
+	if err := os.WriteFile(unrelated, []byte("baseline\n"), 0644); err != nil {
+		t.Fatalf("failed to write unrelated baseline: %v", err)
+	}
+	if err := manager.CommitChangesForPaths("test: add unrelated baseline", []string{"unrelated.txt"}); err != nil {
+		t.Fatalf("failed to commit unrelated baseline: %v", err)
+	}
+	if err := os.WriteFile(unrelated, []byte("baseline\nlocal change\n"), 0644); err != nil {
+		t.Fatalf("failed to modify unrelated file: %v", err)
+	}
+
+	if err := manager.CommitChangesForPaths("test: scoped commit", []string{"commit.txt"}); err != nil {
+		t.Fatalf("CommitChangesForPaths() error = %v", err)
+	}
+
+	showCmd := exec.Command("git", "-C", tmpDir, "show", "--name-only", "--pretty=format:", "HEAD")
+	out, err := showCmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("failed to inspect latest commit: %v\nOutput: %s", err, out)
+	}
+	show := string(out)
+	if !strings.Contains(show, "commit.txt") {
+		t.Fatalf("expected scoped commit to include commit.txt, got:\n%s", show)
+	}
+	if strings.Contains(show, "unrelated.txt") {
+		t.Fatalf("scoped commit should not include unrelated.txt, got:\n%s", show)
+	}
+
+	statusCmd := exec.Command("git", "-C", tmpDir, "status", "--porcelain")
+	statusOut, err := statusCmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("failed to get git status: %v\nOutput: %s", err, statusOut)
+	}
+	status := string(statusOut)
+	if !strings.Contains(status, " M unrelated.txt") {
+		t.Fatalf("expected unrelated.txt to remain modified, got status:\n%s", status)
+	}
+}

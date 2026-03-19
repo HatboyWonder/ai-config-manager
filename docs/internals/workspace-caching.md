@@ -6,6 +6,47 @@ This document explains how aimgr's workspace caching system optimizes Git reposi
 
 Git repositories are cached in the `.workspace/` directory for efficient reuse across all Git operations. This significantly improves performance when working with remote repositories.
 
+## Concurrency Guarantees
+
+Workspace cache mutations are protected by OS-backed advisory file locks under
+`<repo>/.workspace/locks/`.
+
+Lock files:
+
+- Repo-wide lock: `<repo>/.workspace/locks/repo.lock`
+- Per-cache lock: `<repo>/.workspace/locks/caches/<cache-hash>.lock`
+- Shared cache metadata lock: `<repo>/.workspace/locks/workspace-metadata.lock`
+
+Required lock ordering is always:
+
+1. repo lock
+2. cache lock
+3. workspace metadata lock
+
+Notes:
+
+- Top-level mutating repo commands hold the outer repo lock.
+- Cache clone/update/remove operations are serialized per cache hash.
+- `.workspace/.cache-metadata.json` updates are serialized with the metadata lock and written with atomic replacement.
+- Workspace metadata lock is held only for short read-modify-write sections, not long git network operations.
+- On Unix/POSIX builds this uses `flock`; Windows lock support is currently not implemented in this release.
+
+### Atomic replacement for workspace cache metadata
+
+`.workspace/.cache-metadata.json` uses the same atomic-write helper used for
+other repo-managed state files (`ai.repo.yaml`, `.metadata/sources.json`, and
+resource metadata files under `.metadata/...`).
+
+For each write, aimgr:
+
+1. creates a temp file in the same directory,
+2. writes full JSON and `fsync`s the temp file,
+3. renames the temp file over `.cache-metadata.json`,
+4. `fsync`s the parent directory where supported.
+
+This provides crash-safe replacement semantics for the file content. It does
+not replace lock-based serialization for concurrent read-modify-write updates.
+
 ## Performance Benefits
 
 - **First operation** (`repo add`, `repo sync`): Full git clone (creates cache)
@@ -185,10 +226,11 @@ func cacheExists(repoURL string) bool {
 ### Cache Operations
 
 The `pkg/workspace/` package provides:
-- `Clone()` - Clone repository to cache
-- `Pull()` - Update cached repository
-- `GetPath()` - Get path to cached repository
+- `GetOrClone()` - Clone repository to cache if missing, otherwise reuse existing cache
+- `Update()` - Refresh cached repository state
+- `ListCached()` - Enumerate cached source URLs
 - `Prune()` - Remove unreferenced caches
+- `Remove()` - Remove one cached repository
 
 ## Best Practices
 

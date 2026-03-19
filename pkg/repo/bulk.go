@@ -82,6 +82,8 @@ func (m *Manager) AddBulk(sources []string, opts BulkImportOptions) (*BulkImport
 
 	// Commit changes if not a dry run and if any resources were added/updated
 	if !opts.DryRun && (len(result.Added) > 0 || len(result.Updated) > 0) {
+		commitPaths := m.bulkCommitPaths(result)
+
 		// Build commit message
 		totalChanges := len(result.Added) + len(result.Updated)
 		commitMsg := fmt.Sprintf("aimgr: import %d resource(s)", totalChanges)
@@ -104,7 +106,7 @@ func (m *Manager) AddBulk(sources []string, opts BulkImportOptions) (*BulkImport
 			commitMsg += " (" + strings.Join(details, ", ") + ")"
 		}
 
-		if err := m.CommitChanges(commitMsg); err != nil {
+		if err := m.CommitChangesForPaths(commitMsg, commitPaths); err != nil {
 			// Log warning but don't fail the operation
 			// Git tracking is optional
 			fmt.Fprintf(os.Stderr, "Warning: failed to commit changes: %v\n", err)
@@ -112,6 +114,60 @@ func (m *Manager) AddBulk(sources []string, opts BulkImportOptions) (*BulkImport
 	}
 
 	return result, nil
+}
+
+func (m *Manager) bulkCommitPaths(result *BulkImportResult) []string {
+	paths := make([]string, 0, (len(result.Added)+len(result.Updated))*2+1)
+	paths = append(paths, ".modifications")
+
+	addResourcePaths := func(sourcePath string) {
+		if strings.HasSuffix(sourcePath, ".package.json") {
+			pkg, err := resource.LoadPackage(sourcePath)
+			if err != nil {
+				return
+			}
+
+			paths = append(paths,
+				resource.GetPackagePath(pkg.Name, m.repoPath),
+				metadata.GetPackageMetadataPath(pkg.Name, m.repoPath),
+			)
+			return
+		}
+
+		resType, err := resource.DetectType(sourcePath)
+		if err != nil {
+			return
+		}
+
+		var res *resource.Resource
+		switch resType {
+		case resource.Command:
+			res, err = resource.LoadCommand(sourcePath)
+		case resource.Skill:
+			res, err = resource.LoadSkill(sourcePath)
+		case resource.Agent:
+			res, err = resource.LoadAgent(sourcePath)
+		default:
+			return
+		}
+		if err != nil {
+			return
+		}
+
+		paths = append(paths,
+			m.GetPathForResource(res),
+			metadata.GetMetadataPath(res.Name, resType, m.repoPath),
+		)
+	}
+
+	for _, sourcePath := range result.Added {
+		addResourcePaths(sourcePath)
+	}
+	for _, sourcePath := range result.Updated {
+		addResourcePaths(sourcePath)
+	}
+
+	return paths
 }
 
 // importResource imports a single resource (helper for AddBulk)

@@ -98,7 +98,8 @@ func (m *Manager) Remove(name string, resourceType resource.ResourceType) error 
 
 	// Commit the removal
 	commitMsg := fmt.Sprintf("aimgr: remove %s: %s", resourceType, name)
-	if err := m.CommitChanges(commitMsg); err != nil {
+	commitPaths := []string{path, metadataPath, ".modifications"}
+	if err := m.CommitChangesForPaths(commitMsg, commitPaths); err != nil {
 		// Log warning but don't fail the operation
 		fmt.Fprintf(os.Stderr, "Warning: failed to commit changes: %v\n", err)
 	}

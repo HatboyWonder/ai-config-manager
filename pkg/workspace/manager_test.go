@@ -1,10 +1,18 @@
 package workspace
 
 import (
+	"context"
+	"errors"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/dynatrace-oss/ai-config-manager/v3/pkg/repolock"
 )
 
 // TestNormalizeURL verifies URL normalization logic
@@ -570,5 +578,489 @@ func TestPrune(t *testing.T) {
 	}
 	if urls[0] != normalizeURL(testURL1) {
 		t.Errorf("expected remaining URL %s, got %s", normalizeURL(testURL1), urls[0])
+	}
+}
+
+func TestGetOrClone_TimesOutWhenCacheLockHeldByAnotherProcess(t *testing.T) {
+	tmpDir := t.TempDir()
+	mgr, err := NewManager(tmpDir)
+	if err != nil {
+		t.Fatalf("NewManager failed: %v", err)
+	}
+
+	mgr.lockAcquireTimeout = 120 * time.Millisecond
+	url := "https://github.com/test/locked-repo"
+	lockPath := mgr.locks.CacheLockPath(computeHash(url))
+
+	cmd := startWorkspaceLockHelper(t, lockPath)
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	})
+
+	_, err = mgr.GetOrClone(url, "main")
+	if err == nil {
+		t.Fatalf("GetOrClone expected lock acquisition error")
+	}
+
+	var timeoutErr *repolock.AcquireTimeoutError
+	if !errors.As(err, &timeoutErr) {
+		t.Fatalf("expected AcquireTimeoutError, got: %v", err)
+	}
+}
+
+func TestUpdate_TimesOutWhenCacheLockHeldByAnotherProcess(t *testing.T) {
+	tmpDir := t.TempDir()
+	mgr, err := NewManager(tmpDir)
+	if err != nil {
+		t.Fatalf("NewManager failed: %v", err)
+	}
+	if err := mgr.Init(); err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+
+	mgr.lockAcquireTimeout = 120 * time.Millisecond
+	url := "https://github.com/test/locked-update"
+	cachePath := mgr.getCachePath(url)
+	if err := os.MkdirAll(filepath.Join(cachePath, ".git"), 0755); err != nil {
+		t.Fatalf("failed to create fake cache: %v", err)
+	}
+
+	lockPath := mgr.locks.CacheLockPath(computeHash(url))
+	cmd := startWorkspaceLockHelper(t, lockPath)
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	})
+
+	err = mgr.Update(url, "main")
+	if err == nil {
+		t.Fatalf("Update expected lock acquisition error")
+	}
+
+	var timeoutErr *repolock.AcquireTimeoutError
+	if !errors.As(err, &timeoutErr) {
+		t.Fatalf("expected AcquireTimeoutError, got: %v", err)
+	}
+}
+
+func TestPrune_RemovesUnlockedCacheWhileLockedCacheContended(t *testing.T) {
+	tmpDir := t.TempDir()
+	mgr, err := NewManager(tmpDir)
+	if err != nil {
+		t.Fatalf("NewManager failed: %v", err)
+	}
+	if err := mgr.Init(); err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+
+	mgr.lockAcquireTimeout = 120 * time.Millisecond
+
+	lockedURL := "https://github.com/test/prune-locked"
+	openURL := "https://github.com/test/prune-open"
+
+	lockedCache := mgr.getCachePath(lockedURL)
+	openCache := mgr.getCachePath(openURL)
+	if err := os.MkdirAll(filepath.Join(lockedCache, ".git"), 0755); err != nil {
+		t.Fatalf("failed to create locked fake cache: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(openCache, ".git"), 0755); err != nil {
+		t.Fatalf("failed to create open fake cache: %v", err)
+	}
+
+	metadata := &CacheMetadata{
+		Version: "1.0",
+		Caches: map[string]CacheEntry{
+			computeHash(lockedURL): {
+				URL: normalizeURL(lockedURL),
+				Ref: "main",
+			},
+			computeHash(openURL): {
+				URL: normalizeURL(openURL),
+				Ref: "main",
+			},
+		},
+	}
+	if err := mgr.saveMetadata(metadata); err != nil {
+		t.Fatalf("saveMetadata failed: %v", err)
+	}
+
+	lockPath := mgr.locks.CacheLockPath(computeHash(lockedURL))
+	cmd := startWorkspaceLockHelper(t, lockPath)
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	})
+
+	removed, err := mgr.Prune(nil)
+	if err != nil {
+		t.Fatalf("Prune failed: %v", err)
+	}
+
+	if len(removed) != 1 || removed[0] != normalizeURL(openURL) {
+		t.Fatalf("expected only %s to be pruned, got %v", normalizeURL(openURL), removed)
+	}
+
+	if _, err := os.Stat(openCache); !os.IsNotExist(err) {
+		t.Fatalf("expected open cache to be removed, stat err=%v", err)
+	}
+	if _, err := os.Stat(lockedCache); err != nil {
+		t.Fatalf("expected locked cache to remain, stat err=%v", err)
+	}
+}
+
+func TestConcurrentMetadataUpdates_DoNotLoseEntries(t *testing.T) {
+	tmpDir := t.TempDir()
+	mgr, err := NewManager(tmpDir)
+	if err != nil {
+		t.Fatalf("NewManager failed: %v", err)
+	}
+	if err := mgr.Init(); err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+
+	const count = 8
+	urls := make([]string, 0, count)
+	for i := 0; i < count; i++ {
+		url := fmt.Sprintf("https://github.com/test/metadata-%d", i)
+		urls = append(urls, url)
+	}
+
+	cmds := make([]*exec.Cmd, 0, len(urls))
+	for _, u := range urls {
+		cmd := exec.Command(os.Args[0], "-test.run=TestHelperWorkspaceMetadataUpdate")
+		cmd.Env = append(
+			os.Environ(),
+			"AIMGR_TEST_WORKSPACE_HELPER_MODE=metadata-update",
+			"AIMGR_TEST_WORKSPACE_REPO_PATH="+tmpDir,
+			"AIMGR_TEST_WORKSPACE_METADATA_URL="+u,
+		)
+		if err := cmd.Start(); err != nil {
+			t.Fatalf("failed to start metadata helper for %s: %v", u, err)
+		}
+		cmds = append(cmds, cmd)
+	}
+
+	for _, cmd := range cmds {
+		if err := cmd.Wait(); err != nil {
+			t.Fatalf("metadata helper failed: %v", err)
+		}
+	}
+
+	metadata, err := mgr.loadMetadata()
+	if err != nil {
+		t.Fatalf("loadMetadata failed: %v", err)
+	}
+
+	if len(metadata.Caches) != count {
+		t.Fatalf("expected %d metadata entries, got %d", count, len(metadata.Caches))
+	}
+
+	gotURLs := make([]string, 0, len(metadata.Caches))
+	for _, entry := range metadata.Caches {
+		gotURLs = append(gotURLs, entry.URL)
+	}
+	sort.Strings(gotURLs)
+
+	wantURLs := make([]string, 0, len(urls))
+	for _, u := range urls {
+		wantURLs = append(wantURLs, normalizeURL(u))
+	}
+	sort.Strings(wantURLs)
+
+	for i := range wantURLs {
+		if gotURLs[i] != wantURLs[i] {
+			t.Fatalf("metadata URL mismatch at %d: got %s want %s", i, gotURLs[i], wantURLs[i])
+		}
+	}
+}
+
+func TestUpdateMetadataEntry_TimesOutWhenMetadataLockHeldByAnotherProcess(t *testing.T) {
+	tmpDir := t.TempDir()
+	mgr, err := NewManager(tmpDir)
+	if err != nil {
+		t.Fatalf("NewManager failed: %v", err)
+	}
+	if err := mgr.Init(); err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+
+	mgr.lockAcquireTimeout = 120 * time.Millisecond
+	lockPath := mgr.locks.WorkspaceMetadataLockPath()
+
+	cmd := startWorkspaceLockHelper(t, lockPath)
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	})
+
+	err = mgr.updateMetadataEntry("https://github.com/test/metadata-locked", "main", "clone")
+	if err == nil {
+		t.Fatalf("updateMetadataEntry expected lock acquisition error")
+	}
+
+	var timeoutErr *repolock.AcquireTimeoutError
+	if !errors.As(err, &timeoutErr) {
+		t.Fatalf("expected AcquireTimeoutError, got: %v", err)
+	}
+}
+
+func TestGetOrClone_BlocksUntilConcurrentCloneReleasesCacheLock(t *testing.T) {
+	repoPath := t.TempDir()
+	mgr, err := NewManager(repoPath)
+	if err != nil {
+		t.Fatalf("NewManager failed: %v", err)
+	}
+	if err := mgr.Init(); err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+
+	url := createLocalGitRemoteForWorkspaceTest(t)
+	signalDir := t.TempDir()
+
+	first := exec.Command(os.Args[0], "-test.run=TestHelperWorkspaceConcurrentOperation")
+	first.Env = append(os.Environ(),
+		"AIMGR_TEST_WORKSPACE_HELPER_MODE=workspace-op",
+		"AIMGR_TEST_WORKSPACE_REPO_PATH="+repoPath,
+		"AIMGR_TEST_WORKSPACE_OPERATION=get-or-clone",
+		"AIMGR_TEST_WORKSPACE_URL="+url,
+		"AIMGR_TEST_WORKSPACE_REF=main",
+		"AIMGR_TEST_WORKSPACE_HOLD_OP=clone",
+		"AIMGR_TEST_WORKSPACE_HOLD_SIGNAL_DIR="+signalDir,
+		"AIMGR_TEST_WORKSPACE_HOLD_RELEASE_PATH="+filepath.Join(signalDir, "clone.release"),
+		"AIMGR_TEST_WORKSPACE_SIGNAL_DIR="+signalDir,
+	)
+	if err := first.Start(); err != nil {
+		t.Fatalf("failed to start first helper: %v", err)
+	}
+	firstDone := make(chan error, 1)
+	go func() { firstDone <- first.Wait() }()
+
+	waitForWorkspaceMarker(t, filepath.Join(signalDir, "clone.ready"), 5*time.Second)
+
+	second := exec.Command(os.Args[0], "-test.run=TestHelperWorkspaceConcurrentOperation")
+	second.Env = append(os.Environ(),
+		"AIMGR_TEST_WORKSPACE_HELPER_MODE=workspace-op",
+		"AIMGR_TEST_WORKSPACE_REPO_PATH="+repoPath,
+		"AIMGR_TEST_WORKSPACE_OPERATION=get-or-clone",
+		"AIMGR_TEST_WORKSPACE_URL="+url,
+		"AIMGR_TEST_WORKSPACE_REF=main",
+	)
+	if err := second.Start(); err != nil {
+		t.Fatalf("failed to start second helper: %v", err)
+	}
+	secondDone := make(chan error, 1)
+	go func() { secondDone <- second.Wait() }()
+
+	select {
+	case err := <-secondDone:
+		t.Fatalf("second helper exited before lock release, expected blocking: %v", err)
+	default:
+	}
+
+	if err := os.WriteFile(filepath.Join(signalDir, "clone.release"), []byte("release"), 0644); err != nil {
+		t.Fatalf("failed to release first helper: %v", err)
+	}
+
+	select {
+	case err := <-firstDone:
+		if err != nil {
+			t.Fatalf("first helper failed: %v", err)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatalf("timeout waiting for first helper completion")
+	}
+
+	select {
+	case err := <-secondDone:
+		if err != nil {
+			t.Fatalf("second helper failed: %v", err)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatalf("timeout waiting for second helper completion")
+	}
+
+	metadata, err := mgr.loadMetadata()
+	if err != nil {
+		t.Fatalf("loadMetadata failed: %v", err)
+	}
+	if len(metadata.Caches) != 1 {
+		t.Fatalf("expected exactly one cache metadata entry, got %d", len(metadata.Caches))
+	}
+
+	cachePath := mgr.getCachePath(url)
+	if !mgr.isValidCache(cachePath) {
+		t.Fatalf("expected valid cache after concurrent clone operations: %s", cachePath)
+	}
+}
+
+func waitForWorkspaceMarker(t *testing.T, markerPath string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		if _, err := os.Stat(markerPath); err == nil {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for marker: %s", markerPath)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func createLocalGitRemoteForWorkspaceTest(t *testing.T) string {
+	t.Helper()
+
+	seedRepo := filepath.Join(t.TempDir(), "seed")
+	if err := os.MkdirAll(seedRepo, 0755); err != nil {
+		t.Fatalf("failed to create seed repo: %v", err)
+	}
+
+	runGit := func(dir string, args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %s failed: %v\n%s", strings.Join(args, " "), err, string(output))
+		}
+	}
+
+	runGit(seedRepo, "init")
+	if err := os.WriteFile(filepath.Join(seedRepo, "README.md"), []byte("workspace lock test\n"), 0644); err != nil {
+		t.Fatalf("failed to write seed file: %v", err)
+	}
+	runGit(seedRepo, "add", "README.md")
+	runGit(seedRepo, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "initial")
+	runGit(seedRepo, "branch", "-M", "main")
+
+	baredir := filepath.Join(t.TempDir(), "remote.git")
+	cmd := exec.Command("git", "clone", "--bare", seedRepo, baredir)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("failed to create bare remote: %v\n%s", err, string(output))
+	}
+
+	return baredir
+}
+
+func TestHelperWorkspaceMetadataUpdate(t *testing.T) {
+	if os.Getenv("AIMGR_TEST_WORKSPACE_HELPER_MODE") != "metadata-update" {
+		return
+	}
+
+	repoPath := os.Getenv("AIMGR_TEST_WORKSPACE_REPO_PATH")
+	url := os.Getenv("AIMGR_TEST_WORKSPACE_METADATA_URL")
+	if repoPath == "" || url == "" {
+		os.Exit(2)
+	}
+
+	mgr, err := NewManager(repoPath)
+	if err != nil {
+		os.Exit(3)
+	}
+	if err := mgr.Init(); err != nil {
+		os.Exit(4)
+	}
+	if err := mgr.updateMetadataEntry(url, "main", "clone"); err != nil {
+		os.Exit(5)
+	}
+
+	os.Exit(0)
+}
+
+func TestHelperWorkspaceConcurrentOperation(t *testing.T) {
+	if os.Getenv("AIMGR_TEST_WORKSPACE_HELPER_MODE") != "workspace-op" {
+		return
+	}
+
+	repoPath := os.Getenv("AIMGR_TEST_WORKSPACE_REPO_PATH")
+	op := os.Getenv("AIMGR_TEST_WORKSPACE_OPERATION")
+	url := os.Getenv("AIMGR_TEST_WORKSPACE_URL")
+	ref := os.Getenv("AIMGR_TEST_WORKSPACE_REF")
+	if repoPath == "" || op == "" || url == "" {
+		os.Exit(2)
+	}
+
+	if holdOp := os.Getenv("AIMGR_TEST_WORKSPACE_HOLD_OP"); holdOp != "" {
+		_ = os.Setenv("AIMGR_TEST_WORKSPACE_HOLD_OP", holdOp)
+	}
+	if signalDir := os.Getenv("AIMGR_TEST_WORKSPACE_HOLD_SIGNAL_DIR"); signalDir != "" {
+		_ = os.Setenv("AIMGR_TEST_WORKSPACE_SIGNAL_DIR", signalDir)
+	}
+
+	mgr, err := NewManager(repoPath)
+	if err != nil {
+		os.Exit(3)
+	}
+	if err := mgr.Init(); err != nil {
+		os.Exit(4)
+	}
+
+	switch op {
+	case "get-or-clone":
+		if _, err := mgr.GetOrClone(url, ref); err != nil {
+			os.Exit(5)
+		}
+	default:
+		os.Exit(6)
+	}
+
+	os.Exit(0)
+}
+
+func TestHelperWorkspaceAcquireLockAndWait(t *testing.T) {
+	if os.Getenv("AIMGR_TEST_WORKSPACE_HELPER_MODE") != "acquire-wait" {
+		return
+	}
+
+	path := os.Getenv("AIMGR_TEST_WORKSPACE_HELPER_LOCK_PATH")
+	if path == "" {
+		os.Exit(2)
+	}
+	readyPath := os.Getenv("AIMGR_TEST_WORKSPACE_HELPER_READY_PATH")
+	if readyPath == "" {
+		os.Exit(4)
+	}
+
+	lock, err := repolock.Acquire(context.Background(), path, time.Second)
+	if err != nil {
+		os.Exit(3)
+	}
+	if err := os.WriteFile(readyPath, []byte("ready"), 0644); err != nil {
+		os.Exit(5)
+	}
+
+	defer lock.Unlock()
+	for {
+		time.Sleep(time.Second)
+	}
+}
+
+func startWorkspaceLockHelper(t *testing.T, lockPath string) *exec.Cmd {
+	t.Helper()
+
+	readyPath := filepath.Join(t.TempDir(), "ready")
+	cmd := exec.Command(os.Args[0], "-test.run=TestHelperWorkspaceAcquireLockAndWait")
+	cmd.Env = append(
+		os.Environ(),
+		"AIMGR_TEST_WORKSPACE_HELPER_LOCK_PATH="+lockPath,
+		"AIMGR_TEST_WORKSPACE_HELPER_READY_PATH="+readyPath,
+		"AIMGR_TEST_WORKSPACE_HELPER_MODE=acquire-wait",
+	)
+
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("failed to start helper process: %v", err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, err := os.Stat(readyPath); err == nil {
+			return cmd
+		}
+		if time.Now().After(deadline) {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+			t.Fatalf("helper did not signal readiness")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }

@@ -71,6 +71,18 @@ func runApplyManifest(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	repoLock, err := mgr.AcquireRepoLock(cmd.Context())
+	if err != nil {
+		return fmt.Errorf("failed to acquire repository lock at %s: %w", mgr.RepoLockPath(), err)
+	}
+	defer func() {
+		_ = repoLock.Unlock()
+	}()
+
+	if err := maybeHoldAfterRepoLock(cmd.Context(), "apply-manifest"); err != nil {
+		return err
+	}
+
 	if !repoApplyDryRunFlag {
 		if err := mgr.Init(); err != nil {
 			return fmt.Errorf("failed to initialize repository for apply: %w", err)
@@ -82,7 +94,7 @@ func runApplyManifest(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	current, err := repomanifest.Load(mgr.GetRepoPath())
+	current, err := repomanifest.LoadForMutation(mgr.GetRepoPath())
 	if err != nil {
 		return fmt.Errorf("failed to load local manifest: %w", err)
 	}
@@ -114,7 +126,7 @@ func runApplyManifest(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to save merged manifest: %w", err)
 	}
 
-	if err := mgr.CommitChanges("aimgr: apply manifest sources"); err != nil {
+	if err := mgr.CommitChangesForPaths("aimgr: apply manifest sources", []string{repomanifest.ManifestFileName}); err != nil {
 		fmt.Printf("Warning: Failed to commit manifest: %v\n", err)
 	}
 

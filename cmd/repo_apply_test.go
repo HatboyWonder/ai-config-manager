@@ -6,10 +6,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/dynatrace-oss/ai-config-manager/v3/pkg/repo"
 	"github.com/dynatrace-oss/ai-config-manager/v3/pkg/repomanifest"
 )
 
@@ -312,6 +314,89 @@ func TestRepoApply_StdinRoundTripNoChanges(t *testing.T) {
 		if !strings.Contains(output, expected) {
 			t.Fatalf("expected output to contain %q, got:\n%s", expected, output)
 		}
+	}
+}
+
+func TestRepoApply_CommitIsScopedToManifestFile(t *testing.T) {
+	repoDir := t.TempDir()
+	t.Setenv("AIMGR_REPO_PATH", repoDir)
+
+	mgr := repo.NewManagerWithPath(repoDir)
+	if err := mgr.Init(); err != nil {
+		t.Fatalf("failed to initialize repository: %v", err)
+	}
+
+	// Ensure manifest exists so apply writes an update.
+	baseline := &repomanifest.Manifest{Version: 1, Sources: []*repomanifest.Source{{
+		Name: "team-tools",
+		URL:  "https://github.com/example/tools",
+	}}}
+	if err := baseline.Save(repoDir); err != nil {
+		t.Fatalf("failed to save baseline manifest: %v", err)
+	}
+
+	gitRun := func(args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", repoDir}, args...)...)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %s failed: %v\n%s", strings.Join(args, " "), err, string(out))
+		}
+		return string(out)
+	}
+
+	gitCommit := func(message string) {
+		t.Helper()
+		cmd := exec.Command("git", "-C", repoDir, "-c", "user.name=Test User", "-c", "user.email=test@example.com", "commit", "-m", message)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git commit failed: %v\n%s", err, string(out))
+		}
+	}
+
+	// Commit baseline manifest and create unrelated modified file.
+	gitRun("add", "ai.repo.yaml")
+	gitCommit("test: baseline manifest")
+
+	unrelated := filepath.Join(repoDir, "apply-unrelated.txt")
+	if err := os.WriteFile(unrelated, []byte("baseline\n"), 0644); err != nil {
+		t.Fatalf("failed to write unrelated file: %v", err)
+	}
+	gitRun("add", "apply-unrelated.txt")
+	gitCommit("test: add unrelated")
+	if err := os.WriteFile(unrelated, []byte("baseline\nlocal change\n"), 0644); err != nil {
+		t.Fatalf("failed to modify unrelated file: %v", err)
+	}
+
+	incomingPath := filepath.Join(t.TempDir(), repomanifest.ManifestFileName)
+	incoming := `version: 1
+sources:
+  - name: team-tools
+    url: https://github.com/example/tools
+    include:
+      - skill/new
+`
+	if err := os.WriteFile(incomingPath, []byte(incoming), 0644); err != nil {
+		t.Fatalf("failed to write incoming manifest: %v", err)
+	}
+
+	withApplyFlags(false, string(repomanifest.IncludeMergeReplace), func() {
+		if err := runApplyManifest(repoApplyManifestCmd, []string{incomingPath}); err != nil {
+			t.Fatalf("apply-manifest failed: %v", err)
+		}
+	})
+
+	show := gitRun("show", "--name-only", "--pretty=format:", "HEAD")
+	if !strings.Contains(show, "ai.repo.yaml") {
+		t.Fatalf("expected apply commit to include ai.repo.yaml, got:\n%s", show)
+	}
+	if strings.Contains(show, "apply-unrelated.txt") {
+		t.Fatalf("apply commit must not include unrelated file, got:\n%s", show)
+	}
+
+	status := gitRun("status", "--porcelain")
+	if !strings.Contains(status, " M apply-unrelated.txt") {
+		t.Fatalf("expected unrelated file to remain modified after apply-manifest, status:\n%s", status)
 	}
 }
 

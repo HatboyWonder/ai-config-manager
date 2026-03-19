@@ -1,6 +1,8 @@
 package repo
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -10,6 +12,7 @@ import (
 	"time"
 
 	"github.com/dynatrace-oss/ai-config-manager/v3/pkg/metadata"
+	"github.com/dynatrace-oss/ai-config-manager/v3/pkg/repolock"
 	"github.com/dynatrace-oss/ai-config-manager/v3/pkg/repomanifest"
 	"github.com/dynatrace-oss/ai-config-manager/v3/pkg/resource"
 )
@@ -32,6 +35,43 @@ func TestManagerInit(t *testing.T) {
 	skillsPath := filepath.Join(tmpDir, "skills")
 	if _, err := os.Stat(skillsPath); err != nil {
 		t.Errorf("skills directory was not created: %v", err)
+	}
+}
+
+func TestManagerLockPaths(t *testing.T) {
+	repoPath := filepath.Join(t.TempDir(), "repo")
+	manager := NewManagerWithPath(repoPath)
+
+	if got, want := manager.RepoLockPath(), filepath.Join(repoPath, ".workspace", "locks", "repo.lock"); got != want {
+		t.Fatalf("RepoLockPath() = %q, want %q", got, want)
+	}
+
+	if got, want := manager.WorkspaceMetadataLockPath(), filepath.Join(repoPath, ".workspace", "locks", "workspace-metadata.lock"); got != want {
+		t.Fatalf("WorkspaceMetadataLockPath() = %q, want %q", got, want)
+	}
+
+	if got, want := manager.CacheLockPath("cache-hash"), filepath.Join(repoPath, ".workspace", "locks", "caches", "cache-hash.lock"); got != want {
+		t.Fatalf("CacheLockPath() = %q, want %q", got, want)
+	}
+}
+
+func TestManagerRepoLockNonReentrant(t *testing.T) {
+	manager := NewManagerWithPath(filepath.Join(t.TempDir(), "repo"))
+
+	lock, err := manager.AcquireRepoLock(context.Background())
+	if err != nil {
+		t.Fatalf("AcquireRepoLock() failed: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = lock.Unlock()
+	})
+
+	_, err = manager.AcquireRepoLockWithTimeout(context.Background(), 100*time.Millisecond)
+	if err == nil {
+		t.Fatalf("expected nested repo lock acquisition to fail")
+	}
+	if !errors.Is(err, repolock.ErrNonReentrantLock) {
+		t.Fatalf("expected ErrNonReentrantLock, got %v", err)
 	}
 }
 

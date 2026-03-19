@@ -500,8 +500,20 @@ func TestRepoRemove_GitCommit(t *testing.T) {
 	}
 
 	// Commit the initial state
-	if err := mgr.CommitChanges("test: add source"); err != nil {
+	if err := mgr.CommitChangesForPaths("test: add source", []string{repomanifest.ManifestFileName}); err != nil {
 		t.Fatalf("Failed to commit initial state: %v", err)
+	}
+
+	// Create unrelated tracked file and leave it modified so remove commit must not sweep it in.
+	unrelatedPath := filepath.Join(tempDir, "unrelated.txt")
+	if err := os.WriteFile(unrelatedPath, []byte("base\n"), 0644); err != nil {
+		t.Fatalf("failed to create unrelated file: %v", err)
+	}
+	if err := mgr.CommitChangesForPaths("test: add unrelated baseline", []string{"unrelated.txt"}); err != nil {
+		t.Fatalf("failed to commit unrelated baseline: %v", err)
+	}
+	if err := os.WriteFile(unrelatedPath, []byte("base\nlocal change\n"), 0644); err != nil {
+		t.Fatalf("failed to modify unrelated file: %v", err)
 	}
 
 	// Helper to get git status
@@ -515,9 +527,9 @@ func TestRepoRemove_GitCommit(t *testing.T) {
 		return strings.TrimSpace(string(output))
 	}
 
-	// Verify repo is clean before removal
-	if status := gitStatus(); status != "" {
-		t.Fatalf("Expected clean working tree before removal, got: %s", status)
+	// Verify only unrelated file is modified before removal.
+	if status := gitStatus(); status != "M unrelated.txt" {
+		t.Fatalf("Expected only unrelated.txt modified before removal, got: %s", status)
 	}
 
 	// Remove the source
@@ -525,9 +537,9 @@ func TestRepoRemove_GitCommit(t *testing.T) {
 		t.Fatalf("Failed to remove source: %v", err)
 	}
 
-	// Verify manifest changes are committed (repo is clean)
-	if status := gitStatus(); status != "" {
-		t.Errorf("Expected clean working tree after repo remove, but got uncommitted changes:\n%s", status)
+	// Verify manifest changes are committed while unrelated local edit remains.
+	if status := gitStatus(); status != "M unrelated.txt" {
+		t.Errorf("Expected only unrelated.txt modified after repo remove, got:\n%s", status)
 		t.Error("This indicates manifest changes were not committed (bug ai-config-manager-dvg)")
 	}
 
@@ -542,6 +554,23 @@ func TestRepoRemove_GitCommit(t *testing.T) {
 	expectedMsg := "aimgr: remove source from manifest"
 	if !strings.Contains(logOutput, expectedMsg) {
 		t.Errorf("Expected commit message %q not found in git log:\n%s", expectedMsg, logOutput)
+	}
+
+	// Verify remove commit did not include unrelated changes.
+	cmd = exec.Command("git", "show", "--name-only", "--pretty=format:", "HEAD")
+	cmd.Dir = tempDir
+	output, err = cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("Failed to inspect latest commit files: %v", err)
+	}
+	showOutput := string(output)
+	if strings.Contains(showOutput, "unrelated.txt") {
+		t.Errorf("remove manifest commit should not include unrelated.txt, got:\n%s", showOutput)
+	}
+
+	statusAfter := gitStatus()
+	if statusAfter != "M unrelated.txt" {
+		t.Errorf("expected unrelated.txt to remain modified after repo remove, status:\n%s", statusAfter)
 	}
 }
 

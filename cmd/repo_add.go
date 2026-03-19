@@ -158,6 +158,18 @@ Run 'aimgr repo add --help' for full documentation`)
 			return err
 		}
 
+		repoLock, err := manager.AcquireRepoLock(cmd.Context())
+		if err != nil {
+			return fmt.Errorf("failed to acquire repository lock at %s: %w", manager.RepoLockPath(), err)
+		}
+		defer func() {
+			_ = repoLock.Unlock()
+		}()
+
+		if err := maybeHoldAfterRepoLock(cmd.Context(), "add"); err != nil {
+			return err
+		}
+
 		// Auto-detect: URL or local path?
 		isRemote := parsed.Type == source.GitHub || parsed.Type == source.GitURL
 
@@ -194,7 +206,10 @@ Run 'aimgr repo add --help' for full documentation`)
 			fmt.Fprintf(os.Stderr, "Warning: Failed to track source in manifest: %v\n", err)
 		} else {
 			// Commit manifest changes to git
-			if err := manager.CommitChanges("aimgr: track source in manifest"); err != nil {
+			if err := manager.CommitChangesForPaths("aimgr: track source in manifest", []string{
+				repomanifest.ManifestFileName,
+				filepath.Join(".metadata", "sources.json"),
+			}); err != nil {
 				// Don't fail if commit fails (e.g., not a git repo)
 				fmt.Fprintf(os.Stderr, "Warning: Failed to commit manifest: %v\n", err)
 			}
@@ -1093,7 +1108,7 @@ func formatGitHubShortURL(parsed *source.ParsedSource) string {
 // If the source already exists, its Include field is replaced (REPLACE semantics).
 func addSourceToManifest(manager *repo.Manager, parsed *source.ParsedSource, include []string) error {
 	// Load existing manifest
-	manifest, err := repomanifest.Load(manager.GetRepoPath())
+	manifest, err := repomanifest.LoadForMutation(manager.GetRepoPath())
 	if err != nil {
 		return fmt.Errorf("failed to load manifest: %w", err)
 	}

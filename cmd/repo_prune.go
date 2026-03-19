@@ -90,6 +90,14 @@ Examples:
 			return err
 		}
 
+		repoLock, err := manager.AcquireRepoLock(cmd.Context())
+		if err != nil {
+			return fmt.Errorf("failed to acquire repository lock at %s: %w", manager.RepoLockPath(), err)
+		}
+		defer func() {
+			_ = repoLock.Unlock()
+		}()
+
 		// Create workspace manager
 		workspaceManager, err := workspace.NewManager(manager.GetRepoPath())
 		if err != nil {

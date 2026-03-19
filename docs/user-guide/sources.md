@@ -522,12 +522,28 @@ aimgr repo add git@github.com:owner/private-repo.git
 
 ### Workspace Caching
 
-GitHub operations use a workspace cache for performance:
+Remote Git operations use a workspace cache stored inside your configured repo path:
 
-- **First add**: Full clone (~30s for large repos)
-- **Subsequent syncs**: Uses cached clone (<1s)
-- **Cache location**: `~/.cache/aimgr/workspace/`
-- **Safe to clear**: `rm -rf ~/.cache/aimgr/workspace/`
+- **Cache root**: `<repo>/.workspace/`
+- **Per-repo cache dirs**: `<repo>/.workspace/<cache-hash>/`
+- **Shared cache metadata**: `<repo>/.workspace/.cache-metadata.json`
+
+Concurrency behavior for mutations:
+
+- Repo-wide mutation lock: `<repo>/.workspace/locks/repo.lock`
+- Per-cache mutation lock: `<repo>/.workspace/locks/caches/<cache-hash>.lock`
+- Shared workspace metadata lock: `<repo>/.workspace/locks/workspace-metadata.lock`
+
+Lock ordering is: **repo -> cache -> workspace metadata**.
+
+This means concurrent `repo add/sync/remove/drop/apply-manifest/init/repair/verify --fix/prune`
+operations are serialized safely, and cache metadata updates are protected against
+lost updates.
+
+Repo-managed state files are also written with atomic replacement (temp file in
+same directory, file sync, rename replacement, and parent-directory sync where
+supported). This includes `ai.repo.yaml`, `.metadata/sources.json`, resource
+metadata under `.metadata/...`, and `.workspace/.cache-metadata.json`.
 
 ---
 

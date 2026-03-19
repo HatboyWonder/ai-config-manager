@@ -1,5 +1,6 @@
 {"issue_id":"ai-config-manager-15m","label":"area:sync"}
 {"issue_id":"ai-config-manager-15m","label":"area:workspace"}
+{"issue_id":"ai-config-manager-1av1","label":"area:repo"}
 {"issue_id":"ai-config-manager-292","label":"area:docs"}
 {"issue_id":"ai-config-manager-292","label":"area:repo"}
 {"issue_id":"ai-config-manager-292","label":"area:ux"}
@@ -20,6 +21,8 @@
 {"issue_id":"ai-config-manager-efi","label":"area:docs"}
 {"issue_id":"ai-config-manager-efi","label":"area:repo"}
 {"issue_id":"ai-config-manager-efi","label":"area:ux"}
+{"issue_id":"ai-config-manager-g5ky","label":"area:repo"}
+{"issue_id":"ai-config-manager-g5ky","label":"risk:high"}
 {"issue_id":"ai-config-manager-g7o","label":"area:repo"}
 {"issue_id":"ai-config-manager-g7o","label":"area:ux"}
 {"issue_id":"ai-config-manager-k0e","label":"area:docs"}
@@ -33,6 +36,15 @@
 {"issue_id":"ai-config-manager-l8mc.5","label":"area:release"}
 {"issue_id":"ai-config-manager-l8mc.6","label":"area:release"}
 {"issue_id":"ai-config-manager-l8mc.7","label":"area:release"}
+{"issue_id":"ai-config-manager-q8zf","label":"area:repo"}
+{"issue_id":"ai-config-manager-q8zf","label":"risk:high"}
+{"issue_id":"ai-config-manager-r25t","label":"area:repo"}
+{"issue_id":"ai-config-manager-r25t","label":"risk:high"}
+{"issue_id":"ai-config-manager-rqo9","label":"area:repo"}
+{"issue_id":"ai-config-manager-ryty","label":"area:repo"}
+{"issue_id":"ai-config-manager-ryty","label":"risk:high"}
+{"issue_id":"ai-config-manager-sfrx","label":"area:repo"}
+{"issue_id":"ai-config-manager-sfrx","label":"risk:high"}
 {"issue_id":"ai-config-manager-thsk","label":"area:release"}
 {"issue_id":"ai-config-manager-thsk.1","label":"area:release"}
 {"issue_id":"ai-config-manager-thsk.2","label":"area:release"}

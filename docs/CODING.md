@@ -33,6 +33,66 @@ Version managers (mise, asdf, etc.) may install older versions that are found fi
 aimgr --version
 ```
 
+## Concurrency and Locking Model (Repo/Workspace Mutations)
+
+All repo mutations are coordinated with OS-backed advisory file locks under:
+
+`<repo>/.workspace/locks/`
+
+Lock files:
+
+- Repo-wide lock: `<repo>/.workspace/locks/repo.lock`
+- Workspace metadata lock: `<repo>/.workspace/locks/workspace-metadata.lock`
+- Per-cache lock: `<repo>/.workspace/locks/caches/<cache-hash>.lock`
+
+Lock ordering is strict and must never be reversed:
+
+1. repo lock
+2. cache lock
+3. workspace metadata lock
+
+Rules:
+
+- Top-level mutating CLI commands are outermost repo-lock holders.
+- Workspace cache operations may take cache lock and metadata lock, but must not try to take repo lock from inside those sections.
+- Workspace metadata lock is only for short metadata read-modify-write sections (not long clone/fetch/pull work).
+
+Scope / limitations:
+
+- These locks are implemented with `flock` on Unix/POSIX builds.
+- Windows lock implementation is currently not available in this release.
+- Locks serialize *aimgr* mutation paths; they do not prevent arbitrary external tools from modifying files directly.
+
+## Atomic Write Model (Repo-Managed State Files)
+
+Repo-managed state files are written with **atomic replacement**, not in-place
+truncating writes.
+
+State files covered by this model include:
+
+- `ai.repo.yaml`
+- `.metadata/sources.json`
+- Resource metadata files under `.metadata/...` (for example
+  `.metadata/skills/<name>-metadata.json`)
+- `.workspace/.cache-metadata.json`
+
+Write sequence (via `pkg/fileutil.AtomicWrite`):
+
+1. Create a temporary file in the **same directory** as the target file.
+2. Write full file contents to the temp file.
+3. `fsync` the temp file.
+4. Rename the temp file over the destination path.
+5. `fsync` the parent directory where supported.
+
+Important limits:
+
+- Parent directories must already exist before writing.
+- Atomic replacement protects against partial-file writes during process crashes,
+  but it does not by itself resolve concurrent read-modify-write races; locks
+  still provide serialization for mutation paths.
+- Parent-directory `fsync` is best-effort by platform; on Windows this layer
+  currently does not perform directory `fsync`.
+
 ## Quick Commands
 
 ```bash

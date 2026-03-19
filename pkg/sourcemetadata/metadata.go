@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/dynatrace-oss/ai-config-manager/v3/pkg/fileutil"
 )
 
 // SourceState tracks runtime state for a single source
@@ -63,7 +65,7 @@ func (m *SourceMetadata) Save(repoPath string) error {
 		return fmt.Errorf("failed to marshal source metadata: %w", err)
 	}
 
-	if err := os.WriteFile(metadataPath, data, 0644); err != nil {
+	if err := fileutil.AtomicWrite(metadataPath, data, 0644); err != nil {
 		return fmt.Errorf("failed to write source metadata: %w", err)
 	}
 
