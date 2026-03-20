@@ -334,6 +334,7 @@ func NewManager(repoPath string) (*Manager, error) {
 // Init initializes the workspace cache directory structure.
 // Creates the .workspace directory if it doesn't exist.
 func (m *Manager) Init() error {
+	// #nosec G703 -- workspaceDir is the repository-scoped .workspace directory derived from repoPath.
 	if err := os.MkdirAll(m.workspaceDir, 0755); err != nil {
 		return fmt.Errorf("failed to create workspace directory: %w", err)
 	}
@@ -897,6 +898,7 @@ func (m *Manager) getCachePath(url string) string {
 // Returns true if the cache is valid, false otherwise.
 func (m *Manager) isValidCache(cachePath string) bool {
 	// Check if directory exists
+	// #nosec G703 -- cachePath is derived from the normalized URL hash under workspaceDir.
 	info, err := os.Stat(cachePath)
 	if err != nil || !info.IsDir() {
 		return false
@@ -904,6 +906,7 @@ func (m *Manager) isValidCache(cachePath string) bool {
 
 	// Check if .git directory exists
 	gitPath := filepath.Join(cachePath, ".git")
+	// #nosec G703 -- gitPath stays within the hashed workspace cache directory.
 	gitInfo, err := os.Stat(gitPath)
 	if err != nil || !gitInfo.IsDir() {
 		return false
