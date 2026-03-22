@@ -120,6 +120,7 @@ Complete documentation is available in the `docs/` directory:
 
 - **[Pattern Matching](docs/reference/pattern-matching.md)** - Glob patterns for batch operations
 - **[Output Formats](docs/reference/output-formats.md)** - JSON, YAML, table output for scripting
+- **[Resource Validation](docs/reference/resource-validation.md)** - Validate skills, agents, commands, and packages before sync/install
 - **[Supported Tools](docs/reference/supported-tools.md)** - Tool compatibility and external documentation links
 - **[Troubleshooting](docs/reference/troubleshooting.md)** - Common issues and solutions
 

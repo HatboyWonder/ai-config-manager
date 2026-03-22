@@ -413,6 +413,36 @@ func TestValidatePackageResources(t *testing.T) {
 	}
 }
 
+func TestValidatePackageResources_NestedCommandReferences(t *testing.T) {
+	tmpDir := t.TempDir()
+	manager := NewManagerWithPath(tmpDir)
+
+	if err := os.MkdirAll(filepath.Join(tmpDir, "commands", "ops"), 0755); err != nil {
+		t.Fatalf("mkdir nested commands: %v", err)
+	}
+	cmdPath := filepath.Join(tmpDir, "commands", "ops", "deploy.md")
+	if err := os.WriteFile(cmdPath, []byte("---\ndescription: deploy\n---\n# Deploy\n"), 0644); err != nil {
+		t.Fatalf("write command: %v", err)
+	}
+
+	pkg := &resource.Package{
+		Name:        "nested-pkg",
+		Description: "Nested package",
+		Resources: []string{
+			"command/ops/deploy",
+			"command/ops/missing",
+		},
+	}
+
+	missing := manager.ValidatePackageResources(pkg)
+	if len(missing) != 1 {
+		t.Fatalf("ValidatePackageResources() missing=%v, want 1", missing)
+	}
+	if missing[0] != "command/ops/missing" {
+		t.Fatalf("unexpected missing reference: %v", missing[0])
+	}
+}
+
 func TestListPackages(t *testing.T) {
 	tmpDir := t.TempDir()
 	manager := NewManagerWithPath(tmpDir)

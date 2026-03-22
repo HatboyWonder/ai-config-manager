@@ -11,10 +11,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/adrg/xdg"
 	"github.com/dynatrace-oss/ai-config-manager/v3/pkg/metadata"
 	"github.com/dynatrace-oss/ai-config-manager/v3/pkg/repolock"
 	"github.com/dynatrace-oss/ai-config-manager/v3/pkg/repomanifest"
 	"github.com/dynatrace-oss/ai-config-manager/v3/pkg/resource"
+	"github.com/spf13/viper"
 )
 
 func TestManagerInit(t *testing.T) {
@@ -53,6 +55,71 @@ func TestManagerLockPaths(t *testing.T) {
 	if got, want := manager.CacheLockPath("cache-hash"), filepath.Join(repoPath, ".workspace", "locks", "caches", "cache-hash.lock"); got != want {
 		t.Fatalf("CacheLockPath() = %q, want %q", got, want)
 	}
+}
+
+func TestResolveRepoPath(t *testing.T) {
+	t.Run("env override takes precedence", func(t *testing.T) {
+		viper.Reset()
+		t.Cleanup(viper.Reset)
+
+		envRepoPath := filepath.Join(t.TempDir(), "env-repo")
+		t.Setenv("AIMGR_REPO_PATH", envRepoPath)
+
+		configPath := filepath.Join(t.TempDir(), "aimgr.yaml")
+		cfg := "repo:\n  path: /tmp/config-repo\n"
+		if err := os.WriteFile(configPath, []byte(cfg), 0644); err != nil {
+			t.Fatalf("write config: %v", err)
+		}
+		viper.SetConfigFile(configPath)
+		if err := viper.ReadInConfig(); err != nil {
+			t.Fatalf("read viper config: %v", err)
+		}
+
+		if got := ResolveRepoPath(); got != envRepoPath {
+			t.Fatalf("ResolveRepoPath() = %q, want %q", got, envRepoPath)
+		}
+	})
+
+	t.Run("uses config repo path when env unset", func(t *testing.T) {
+		viper.Reset()
+		t.Cleanup(viper.Reset)
+
+		t.Setenv("AIMGR_REPO_PATH", "")
+		configRepoPath := filepath.Join(t.TempDir(), "config-repo")
+
+		configPath := filepath.Join(t.TempDir(), "aimgr.yaml")
+		cfg := "repo:\n  path: " + configRepoPath + "\n"
+		if err := os.WriteFile(configPath, []byte(cfg), 0644); err != nil {
+			t.Fatalf("write config: %v", err)
+		}
+		viper.SetConfigFile(configPath)
+		if err := viper.ReadInConfig(); err != nil {
+			t.Fatalf("read viper config: %v", err)
+		}
+
+		if got := ResolveRepoPath(); got != configRepoPath {
+			t.Fatalf("ResolveRepoPath() = %q, want %q", got, configRepoPath)
+		}
+	})
+
+	t.Run("falls back to xdg data home default", func(t *testing.T) {
+		viper.Reset()
+		t.Cleanup(viper.Reset)
+
+		t.Setenv("AIMGR_REPO_PATH", "")
+
+		// Point Viper to a missing config file so LoadGlobal returns defaults.
+		missingConfigPath := filepath.Join(t.TempDir(), "missing-aimgr.yaml")
+		viper.SetConfigFile(missingConfigPath)
+		if err := viper.ReadInConfig(); err == nil {
+			t.Fatalf("expected missing config to fail read")
+		}
+
+		want := filepath.Join(xdg.DataHome, "ai-config", "repo")
+		if got := ResolveRepoPath(); got != want {
+			t.Fatalf("ResolveRepoPath() = %q, want %q", got, want)
+		}
+	})
 }
 
 func TestManagerRepoLockNonReentrant(t *testing.T) {

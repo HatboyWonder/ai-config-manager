@@ -453,6 +453,21 @@ func TestLoadPackage(t *testing.T) {
 			},
 			wantError: false,
 		},
+		{
+			name: "invalid resource reference",
+			setup: func(t *testing.T) string {
+				tmpDir := t.TempDir()
+				pkgFile := filepath.Join(tmpDir, "bad-ref.package.json")
+				content := `{"name": "test-package", "description": "test", "resources": ["invalid"]}`
+				if err := os.WriteFile(pkgFile, []byte(content), 0644); err != nil {
+					t.Fatal(err)
+				}
+				return pkgFile
+			},
+			wantPkg:      nil,
+			wantError:    true,
+			errorMessage: "invalid package resource reference",
+		},
 	}
 
 	for _, tt := range tests {

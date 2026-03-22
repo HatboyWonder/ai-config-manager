@@ -27,6 +27,7 @@ Technical reference documentation for syntax and specifications.
 - [Supported Tools](reference/supported-tools.md) - AI tools supported by aimgr and their capabilities
 - [Pattern Matching](reference/pattern-matching.md) - Glob patterns for filtering and matching resources
 - [Output Formats](reference/output-formats.md) - CLI output formats (table, JSON, YAML) and scripting
+- [Resource Validation](reference/resource-validation.md) - Validate resources by path or canonical ID
 
 **Use this section for:** Looking up exact syntax, understanding tool support, and scripting with aimgr.
 

@@ -248,7 +248,8 @@ aimgr install skill/foo --force
 - **[Repairing Resources](repair.md)** - Fix broken installations and clean up projects
 - **[Configuration](configuration.md)** - Repository path, targets, and settings
 - **[Pattern Matching](../reference/pattern-matching.md)** - Advanced pattern syntax
-- **[Output Formats](output-formats.md)** - JSON/YAML output for scripting
+- **[Output Formats](../reference/output-formats.md)** - JSON/YAML output for scripting
+- **[Resource Validation](../reference/resource-validation.md)** - Validate resources by path or canonical ID before sync/install
 - **[Troubleshooting](../reference/troubleshooting.md)** - Common issues and solutions
 
 ### Creating Your Own Resources

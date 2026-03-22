@@ -96,6 +96,12 @@ func LoadPackage(filePath string) (*Package, error) {
 		return nil, fmt.Errorf("invalid package name: %w", err)
 	}
 
+	for i, ref := range pkg.Resources {
+		if _, _, err := ParseResourceReference(ref); err != nil {
+			return nil, fmt.Errorf("invalid package resource reference at index %d: %w", i, err)
+		}
+	}
+
 	return &pkg, nil
 }
 

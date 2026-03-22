@@ -9,6 +9,7 @@ This section contains detailed reference documentation for developers and advanc
 - [Supported Tools](supported-tools.md) - AI tools supported by aimgr and their capabilities
 - [Pattern Matching](pattern-matching.md) - Glob patterns for filtering and matching resources
 - [Output Formats](output-formats.md) - CLI output formats (table, JSON, YAML) and scripting
+- [Resource Validation](resource-validation.md) - Creator workflow for validating skills, agents, commands, and packages
 - [Troubleshooting](troubleshooting.md) - Common issues and solutions
 
 ## See Also

@@ -31,37 +31,7 @@ type Manager struct {
 // 2. repo.path from config file (~/.config/aimgr/aimgr.yaml)
 // 3. XDG default (~/.local/share/ai-config/repo/)
 func NewManager() (*Manager, error) {
-	var repoPath string
-
-	// Priority 1: Check for environment variable override first
-	repoPath = os.Getenv("AIMGR_REPO_PATH")
-	if repoPath != "" {
-		m := &Manager{
-			repoPath: repoPath,
-			logLevel: slog.LevelInfo, // Default to Info
-			locks:    repolock.NewManager(repoPath),
-		}
-		m.initLogger()
-		return m, nil
-	}
-
-	// Priority 2: Check config file for repo.path
-	cfg, err := config.LoadGlobal()
-	if err == nil && cfg.Repo.Path != "" {
-		// Config loaded successfully and has repo.path set
-		// Path is already validated and expanded by config.Validate()
-		m := &Manager{
-			repoPath: cfg.Repo.Path,
-			logLevel: slog.LevelInfo, // Default to Info
-			locks:    repolock.NewManager(cfg.Repo.Path),
-		}
-		m.initLogger()
-		return m, nil
-	}
-
-	// Priority 3: Fall back to XDG default
-	// Ignore config errors - user may not have config file
-	repoPath = filepath.Join(xdg.DataHome, "ai-config", "repo")
+	repoPath := ResolveRepoPath()
 	m := &Manager{
 		repoPath: repoPath,
 		logLevel: slog.LevelInfo, // Default to Info
@@ -69,6 +39,26 @@ func NewManager() (*Manager, error) {
 	}
 	m.initLogger()
 	return m, nil
+}
+
+// ResolveRepoPath determines the effective repository path using the same
+// precedence as NewManager, but without initializing a Manager or logger.
+//
+// Precedence:
+// 1. AIMGR_REPO_PATH environment variable
+// 2. repo.path from global config
+// 3. XDG default (~/.local/share/ai-config/repo)
+func ResolveRepoPath() string {
+	if repoPath := os.Getenv("AIMGR_REPO_PATH"); repoPath != "" {
+		return repoPath
+	}
+
+	// Ignore config loading errors to match NewManager behavior.
+	if cfg, err := config.LoadGlobal(); err == nil && cfg.Repo.Path != "" {
+		return cfg.Repo.Path
+	}
+
+	return filepath.Join(xdg.DataHome, "ai-config", "repo")
 }
 
 // NewManagerWithPath creates a manager with a custom repository path (for testing)

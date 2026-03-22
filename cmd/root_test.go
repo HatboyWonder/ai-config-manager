@@ -34,6 +34,7 @@ func TestRootCommandHasExpectedSubcommands(t *testing.T) {
 		"clean",
 		"verify",
 		"repo",
+		"resource",
 		"config",
 		"completion",
 	}

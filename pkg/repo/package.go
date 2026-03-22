@@ -1,12 +1,24 @@
 package repo
 
 import (
-	"os"
+	"fmt"
 
 	"github.com/dynatrace-oss/ai-config-manager/v3/pkg/resource"
 )
 
 func (m *Manager) validatePackageResources(pkg *resource.Package) []string {
+	index, err := BuildPackageReferenceIndexFromRoots([]string{m.repoPath})
+	if err != nil {
+		if m.logger != nil {
+			m.logger.Error("failed to build package reference index",
+				"package", pkg.Name,
+				"repo_path", m.repoPath,
+				"error", err.Error(),
+			)
+		}
+		return append([]string{}, pkg.Resources...)
+	}
+
 	var missing []string
 
 	// DEBUG: Log package validation start
@@ -17,47 +29,21 @@ func (m *Manager) validatePackageResources(pkg *resource.Package) []string {
 		)
 	}
 
-	for _, ref := range pkg.Resources {
-		// Parse the resource reference
-		resType, resName, err := resource.ParseResourceReference(ref)
-		if err != nil {
-			// Invalid reference format
-			if m.logger != nil {
-				m.logger.Error("invalid resource reference format",
-					"package", pkg.Name,
-					"reference", ref,
-					"error", err.Error(),
-				)
-			}
-			missing = append(missing, ref)
-			continue
+	issues := ValidatePackageReferences(pkg, index)
+	for _, issue := range issues {
+		if issue.Reference != "" {
+			missing = append(missing, issue.Reference)
+		} else {
+			missing = append(missing, fmt.Sprintf("<invalid>: %s", issue.Message))
 		}
 
-		// Check if resource exists
-		resPath := m.GetPath(resName, resType)
-		if _, err := os.Stat(resPath); os.IsNotExist(err) {
-			// DEBUG: Log missing resource
-			if m.logger != nil {
-				m.logger.Debug("package resource not found",
-					"package", pkg.Name,
-					"reference", ref,
-					"type", string(resType),
-					"name", resName,
-					"expected_path", resPath,
-				)
-			}
-			missing = append(missing, ref)
-		} else {
-			// DEBUG: Log resource found
-			if m.logger != nil {
-				m.logger.Debug("package resource found",
-					"package", pkg.Name,
-					"reference", ref,
-					"type", string(resType),
-					"name", resName,
-					"path", resPath,
-				)
-			}
+		if m.logger != nil {
+			m.logger.Debug("package resource not found",
+				"package", pkg.Name,
+				"reference", issue.Reference,
+				"message", issue.Message,
+				"suggestion", issue.Suggestion,
+			)
 		}
 	}
 
