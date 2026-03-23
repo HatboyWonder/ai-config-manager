@@ -43,13 +43,13 @@ Follow Semantic Versioning:
 Analyze commits to determine bump:
 
 ```bash
-git log v2.2.0..HEAD --pretty=format:"%s" | grep -E "^(feat|fix|BREAKING):"
+git log v2.2.0..HEAD --pretty=format:"%s" | grep -E "^(feat(\([^)]+\))?:|fix(\([^)]+\))?:|BREAKING)"
 ```
 
 Rules:
-- `feat:` → minor
-- `fix:` only → patch  
-- `BREAKING CHANGE:` → major
+- `feat:` / `feat(scope):` → minor
+- `fix:` / `fix(scope):` only → patch  
+- `BREAKING CHANGE:` / `BREAKING:` → major
 
 ## Pre-Release Checklist
 
