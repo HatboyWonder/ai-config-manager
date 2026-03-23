@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.6.0] - 2026-03-23
+
 ### Added
 - **Resource validation workflow** — Added a validation workflow for resources to improve verification and release readiness checks.
 - **Local overlays and hardened shared manifests** — Added support for local manifest overlays and strengthened shared team manifest handling.
