@@ -60,3 +60,6 @@ logs/
 
 # AI manager definition (not everyone uses the same skills)
 ai.package.yaml
+
+# Beads / Dolt files (added by bd init)
+.beads-credential-key
