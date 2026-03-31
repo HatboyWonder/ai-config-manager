@@ -102,6 +102,14 @@ Use --dry-run to preview all planned actions without changing files.
 			return err
 		}
 
+		repoLock, err := manager.AcquireRepoReadLock(cmd.Context())
+		if err != nil {
+			return fmt.Errorf("failed to acquire repository read lock at %s: %w", manager.RepoLockPath(), err)
+		}
+		defer func() {
+			_ = repoLock.Unlock()
+		}()
+
 		ownedDirs, err := detectOwnedResourceDirs(projectPath)
 		if err != nil {
 			return fmt.Errorf("failed to detect owned resource directories: %w", err)

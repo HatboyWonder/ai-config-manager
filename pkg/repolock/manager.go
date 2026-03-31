@@ -74,25 +74,46 @@ func (m *Manager) CacheLockPath(cacheHash string) string {
 	return filepath.Join(m.repoPath, ".workspace", "locks", "caches", cacheHash+".lock")
 }
 
-// AcquireRepoLock acquires the repo-wide lock using default CLI semantics:
-// block until available, up to 30 seconds, honoring context cancellation.
+// AcquireRepoLock acquires the repo-wide exclusive/write lock using default CLI
+// semantics: block until available, up to 30 seconds, honoring context
+// cancellation.
 func (m *Manager) AcquireRepoLock(ctx context.Context) (*Lock, error) {
-	return Acquire(ctx, m.RepoLockPath(), defaultAcquireTimeout)
+	return m.AcquireRepoWriteLock(ctx)
 }
 
-// AcquireWorkspaceMetadataLock acquires the shared workspace metadata lock.
+// AcquireRepoReadLock acquires the repo-wide shared/read lock.
+func (m *Manager) AcquireRepoReadLock(ctx context.Context) (*Lock, error) {
+	return AcquireShared(ctx, m.RepoLockPath(), defaultAcquireTimeout)
+}
+
+// AcquireRepoWriteLock acquires the repo-wide exclusive/write lock.
+func (m *Manager) AcquireRepoWriteLock(ctx context.Context) (*Lock, error) {
+	return AcquireExclusive(ctx, m.RepoLockPath(), defaultAcquireTimeout)
+}
+
+// AcquireWorkspaceMetadataLock acquires the exclusive workspace metadata lock.
 func (m *Manager) AcquireWorkspaceMetadataLock(ctx context.Context) (*Lock, error) {
-	return Acquire(ctx, m.WorkspaceMetadataLockPath(), defaultAcquireTimeout)
+	return AcquireExclusive(ctx, m.WorkspaceMetadataLockPath(), defaultAcquireTimeout)
 }
 
 // AcquireCacheLock acquires a per-cache lock for the provided cache hash.
 func (m *Manager) AcquireCacheLock(ctx context.Context, cacheHash string) (*Lock, error) {
-	return Acquire(ctx, m.CacheLockPath(cacheHash), defaultAcquireTimeout)
+	return AcquireExclusive(ctx, m.CacheLockPath(cacheHash), defaultAcquireTimeout)
 }
 
 // TryAcquireRepoLock attempts to acquire the repo lock without waiting.
 func (m *Manager) TryAcquireRepoLock() (*Lock, bool, error) {
-	return TryAcquire(m.RepoLockPath())
+	return m.TryAcquireRepoWriteLock()
+}
+
+// TryAcquireRepoReadLock attempts to acquire the repo shared/read lock without waiting.
+func (m *Manager) TryAcquireRepoReadLock() (*Lock, bool, error) {
+	return TryAcquireShared(m.RepoLockPath())
+}
+
+// TryAcquireRepoWriteLock attempts to acquire the repo exclusive/write lock without waiting.
+func (m *Manager) TryAcquireRepoWriteLock() (*Lock, bool, error) {
+	return TryAcquireExclusive(m.RepoLockPath())
 }
 
 type heldLockTracker struct {

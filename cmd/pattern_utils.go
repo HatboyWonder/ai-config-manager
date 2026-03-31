@@ -24,6 +24,11 @@ func SetLogger(l *slog.Logger) {
 // ExpandPattern expands a pattern to matching resources from repository.
 // If the argument is not a pattern, returns it as-is in a single-element slice.
 // Returns a slice of resource arguments in "type/name" format.
+//
+// Locking policy:
+// ExpandPattern intentionally does not acquire a repo lock itself. Callers that
+// need a stable multi-file snapshot (for example, repo subcommands) must hold a
+// repo read or write lock before calling this helper.
 func ExpandPattern(mgr *repo.Manager, resourceArg string) ([]string, error) {
 	// Parse pattern
 	resourceType, _, isPattern := pattern.ParsePattern(resourceArg)

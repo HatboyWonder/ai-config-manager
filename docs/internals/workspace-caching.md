@@ -29,7 +29,8 @@ Notes:
 - Cache clone/update/remove operations are serialized per cache hash.
 - `.workspace/.cache-metadata.json` updates are serialized with the metadata lock and written with atomic replacement.
 - Workspace metadata lock is held only for short read-modify-write sections, not long git network operations.
-- On Unix/POSIX builds this uses `flock`; Windows lock support is currently not implemented in this release.
+- On Unix/POSIX builds this uses `flock` (`LOCK_SH` for repo read locks and `LOCK_EX` for repo write locks on the shared `repo.lock` path).
+- On Windows, locks use `LockFileEx`/`UnlockFileEx`; repo read-lock APIs currently fall back to exclusive locking, so concurrent shared readers are not currently enabled on Windows.
 
 ### Atomic replacement for workspace cache metadata
 

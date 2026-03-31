@@ -870,7 +870,7 @@ func runSync(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to create repo manager: %w", err)
 	}
 
-	repoLock, err := manager.AcquireRepoLock(cmd.Context())
+	repoLock, err := manager.AcquireRepoWriteLock(cmd.Context())
 	if err != nil {
 		return fmt.Errorf("failed to acquire repository lock at %s: %w", manager.RepoLockPath(), err)
 	}

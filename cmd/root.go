@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"os"
 
@@ -44,7 +45,11 @@ It helps you organize and share reusable AI configurations.`,
 func Execute() {
 	err := rootCmd.Execute()
 	if err != nil {
-		os.Exit(1)
+		var commandErr *commandExitError
+		if !errors.As(err, &commandErr) || !commandErr.SuppressStderr {
+			fmt.Fprintln(os.Stderr, err)
+		}
+		os.Exit(getCommandExitCode(err))
 	}
 }
 
@@ -92,6 +97,10 @@ func init() {
 
 	// Version flag
 	rootCmd.Flags().BoolVarP(&versionFlag, "version", "v", false, "Show version information")
+
+	// Handle error rendering centrally in Execute() so command handlers can
+	// control exit behavior via typed command errors.
+	rootCmd.SilenceErrors = true
 }
 
 // initConfig reads in config file and ENV variables if set.

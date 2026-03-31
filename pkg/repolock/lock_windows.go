@@ -22,6 +22,13 @@ type Lock struct {
 	file *os.File
 }
 
+type lockMode int
+
+const (
+	lockModeShared lockMode = iota
+	lockModeExclusive
+)
+
 // Acquire acquires an exclusive lock for the provided path.
 //
 // Semantics:
@@ -30,6 +37,23 @@ type Lock struct {
 //   - Returns AcquireTimeoutError if timeout expires before lock acquisition.
 //   - Returns ErrNonReentrantLock if this process already holds the same lock.
 func Acquire(ctx context.Context, path string, timeout time.Duration) (*Lock, error) {
+	return acquireWithMode(ctx, path, timeout, lockModeExclusive)
+}
+
+// AcquireShared acquires a shared/read lock for the provided path.
+//
+// Windows currently uses an exclusive-only fallback for repo locks; shared mode
+// intentionally maps to exclusive LockFileEx semantics.
+func AcquireShared(ctx context.Context, path string, timeout time.Duration) (*Lock, error) {
+	return acquireWithMode(ctx, path, timeout, lockModeShared)
+}
+
+// AcquireExclusive acquires an exclusive/write lock for the provided path.
+func AcquireExclusive(ctx context.Context, path string, timeout time.Duration) (*Lock, error) {
+	return acquireWithMode(ctx, path, timeout, lockModeExclusive)
+}
+
+func acquireWithMode(ctx context.Context, path string, timeout time.Duration, mode lockMode) (*Lock, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -62,7 +86,7 @@ func Acquire(ctx context.Context, path string, timeout time.Duration) (*Lock, er
 	}
 
 	for {
-		acquired, lockErr := tryLockFileEx(file)
+		acquired, lockErr := tryLockFileEx(file, mode)
 		if lockErr != nil {
 			cleanup()
 			return nil, fmt.Errorf("failed to acquire lock: %w", lockErr)
@@ -88,6 +112,23 @@ func Acquire(ctx context.Context, path string, timeout time.Duration) (*Lock, er
 // TryAcquire attempts a non-blocking lock acquisition.
 // Returns acquired=false when another process already holds the lock.
 func TryAcquire(path string) (*Lock, bool, error) {
+	return tryAcquireWithMode(path, lockModeExclusive)
+}
+
+// TryAcquireShared attempts a non-blocking shared/read lock acquisition.
+//
+// Windows currently uses an exclusive-only fallback for repo locks; shared mode
+// intentionally maps to exclusive LockFileEx semantics.
+func TryAcquireShared(path string) (*Lock, bool, error) {
+	return tryAcquireWithMode(path, lockModeShared)
+}
+
+// TryAcquireExclusive attempts a non-blocking exclusive/write lock acquisition.
+func TryAcquireExclusive(path string) (*Lock, bool, error) {
+	return tryAcquireWithMode(path, lockModeExclusive)
+}
+
+func tryAcquireWithMode(path string, mode lockMode) (*Lock, bool, error) {
 	if err := tracker.claim(path); err != nil {
 		return nil, false, err
 	}
@@ -104,7 +145,7 @@ func TryAcquire(path string) (*Lock, bool, error) {
 		return nil, false, fmt.Errorf("failed to open lock file: %w", err)
 	}
 
-	acquired, lockErr := tryLockFileEx(file)
+	acquired, lockErr := tryLockFileEx(file, mode)
 	if lockErr != nil {
 		_ = file.Close()
 		tracker.release(path)
@@ -144,16 +185,22 @@ func (l *Lock) Unlock() error {
 	return nil
 }
 
-// tryLockFileEx attempts a non-blocking exclusive lock using LockFileEx.
+// tryLockFileEx attempts a non-blocking lock using LockFileEx.
 // Returns (true, nil) on success, (false, nil) if already locked, or (false, err) on error.
-func tryLockFileEx(file *os.File) (bool, error) {
+func tryLockFileEx(file *os.File, mode lockMode) (bool, error) {
 	handle := windows.Handle(file.Fd())
 	const lockfileExclusiveLock = 0x00000002
 	const lockfileFailImmediately = 0x00000001
 
 	var ol windows.Overlapped
-	// LockFileEx with LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY
-	err := windows.LockFileEx(handle, lockfileExclusiveLock|lockfileFailImmediately, 0, 1, 0, &ol)
+	flags := uint32(lockfileFailImmediately)
+	// NOTE: Windows fallback remains exclusive-only for both read and write APIs.
+	// Shared acquisitions intentionally use exclusive semantics for cross-process safety.
+	if mode == lockModeExclusive || mode == lockModeShared {
+		flags |= lockfileExclusiveLock
+	}
+
+	err := windows.LockFileEx(handle, flags, 0, 1, 0, &ol)
 	if err == nil {
 		return true, nil
 	}

@@ -15,7 +15,7 @@ func TestRepoMutatingCommands_FailWhenRepoLockHeld(t *testing.T) {
 	t.Setenv("AIMGR_REPO_PATH", repoPath)
 
 	manager := repo.NewManagerWithPath(repoPath)
-	lock, err := manager.AcquireRepoLock(context.Background())
+	lock, err := manager.AcquireRepoWriteLock(context.Background())
 	if err != nil {
 		t.Fatalf("failed to acquire setup repo lock: %v", err)
 	}
@@ -59,6 +59,87 @@ func TestRepoMutatingCommands_FailWhenRepoLockHeld(t *testing.T) {
 			errMsg := err.Error()
 			if !strings.Contains(errMsg, "failed to acquire repository lock") {
 				t.Fatalf("expected lock acquisition message, got: %v", err)
+			}
+			if !strings.Contains(errMsg, manager.RepoLockPath()) {
+				t.Fatalf("expected lock path %q in error, got: %v", manager.RepoLockPath(), err)
+			}
+		})
+	}
+}
+
+func TestRepoReadCommands_FailWhenRepoWriteLockHeld(t *testing.T) {
+	repoPath := t.TempDir()
+	t.Setenv("AIMGR_REPO_PATH", repoPath)
+
+	manager := repo.NewManagerWithPath(repoPath)
+	lock, err := manager.AcquireRepoWriteLock(context.Background())
+	if err != nil {
+		t.Fatalf("failed to acquire setup repo write lock: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = lock.Unlock()
+	})
+
+	tests := []struct {
+		name string
+		run  func() error
+	}{
+		{name: "repo verify", run: func() error { return repoVerifyCmd.RunE(repoVerifyCmd, nil) }},
+		{name: "repo info", run: func() error { return repoInfoCmd.RunE(repoInfoCmd, nil) }},
+		{name: "repo list", run: func() error { return listCmd.RunE(listCmd, nil) }},
+		{name: "repo describe", run: func() error { return repoDescribeCmd.RunE(repoDescribeCmd, []string{"skill/*"}) }},
+		{name: "repo show-manifest", run: func() error { return runShowManifest(repoShowManifestCmd, nil) }},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.run()
+			if err == nil {
+				t.Fatalf("expected lock acquisition error")
+			}
+
+			errMsg := err.Error()
+			if !strings.Contains(errMsg, "failed to acquire repository read lock") {
+				t.Fatalf("expected read lock acquisition message, got: %v", err)
+			}
+			if !strings.Contains(errMsg, manager.RepoLockPath()) {
+				t.Fatalf("expected lock path %q in error, got: %v", manager.RepoLockPath(), err)
+			}
+		})
+	}
+}
+
+func TestProjectRepoBackedCommands_FailWhenRepoWriteLockHeld(t *testing.T) {
+	repoPath := t.TempDir()
+	t.Setenv("AIMGR_REPO_PATH", repoPath)
+
+	manager := repo.NewManagerWithPath(repoPath)
+	lock, err := manager.AcquireRepoWriteLock(context.Background())
+	if err != nil {
+		t.Fatalf("failed to acquire setup repo write lock: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = lock.Unlock()
+	})
+
+	tests := []struct {
+		name string
+		run  func() error
+	}{
+		{name: "project verify", run: func() error { return projectVerifyCmd.RunE(projectVerifyCmd, nil) }},
+		{name: "project repair", run: func() error { return repairCmd.RunE(repairCmd, nil) }},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.run()
+			if err == nil {
+				t.Fatalf("expected lock acquisition error")
+			}
+
+			errMsg := err.Error()
+			if !strings.Contains(errMsg, "failed to acquire repository read lock") {
+				t.Fatalf("expected read lock acquisition message, got: %v", err)
 			}
 			if !strings.Contains(errMsg, manager.RepoLockPath()) {
 				t.Fatalf("expected lock path %q in error, got: %v", manager.RepoLockPath(), err)

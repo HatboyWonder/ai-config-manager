@@ -1,7 +1,9 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +13,7 @@ import (
 	"github.com/dynatrace-oss/ai-config-manager/v3/pkg/metadata"
 	"github.com/dynatrace-oss/ai-config-manager/v3/pkg/output"
 	"github.com/dynatrace-oss/ai-config-manager/v3/pkg/repo"
+	"github.com/dynatrace-oss/ai-config-manager/v3/pkg/repolock"
 	"github.com/dynatrace-oss/ai-config-manager/v3/pkg/resource"
 )
 
@@ -394,5 +397,143 @@ func TestRepoVerifyFixDeprecationWarning(t *testing.T) {
 	// Verify deprecation warning was printed
 	if !strings.Contains(stderrOutput, "Warning: --fix is deprecated. Use 'aimgr repo repair' instead.") {
 		t.Errorf("Expected deprecation warning on stderr, got: %q", stderrOutput)
+	}
+}
+
+func TestSetVerifyStatusForCompletedResult(t *testing.T) {
+	t.Run("clean result", func(t *testing.T) {
+		result := &VerifyResult{HasErrors: false, HasWarnings: false}
+		setVerifyStatusForCompletedResult(result)
+		if result.Status != verifyStatusClean {
+			t.Fatalf("status=%q want %q", result.Status, verifyStatusClean)
+		}
+	})
+
+	t.Run("warnings only is completed_with_findings", func(t *testing.T) {
+		result := &VerifyResult{HasErrors: false, HasWarnings: true}
+		setVerifyStatusForCompletedResult(result)
+		if result.Status != verifyStatusCompletedWithFindings {
+			t.Fatalf("status=%q want %q", result.Status, verifyStatusCompletedWithFindings)
+		}
+	})
+
+	t.Run("errors is completed_with_findings", func(t *testing.T) {
+		result := &VerifyResult{HasErrors: true, HasWarnings: false}
+		setVerifyStatusForCompletedResult(result)
+		if result.Status != verifyStatusCompletedWithFindings {
+			t.Fatalf("status=%q want %q", result.Status, verifyStatusCompletedWithFindings)
+		}
+	})
+}
+
+func TestOutputVerifyOperationalFailure(t *testing.T) {
+	oldStdout := os.Stdout
+	r, w, pipeErr := os.Pipe()
+	if pipeErr != nil {
+		t.Fatalf("pipe: %v", pipeErr)
+	}
+	os.Stdout = w
+
+	err := outputVerifyOperationalFailure(output.JSON, &repolock.AcquireTimeoutError{Path: "/tmp/repo.lock", Timeout: time.Second})
+	_ = w.Close()
+	os.Stdout = oldStdout
+	if err != nil {
+		t.Fatalf("outputVerifyOperationalFailure returned error: %v", err)
+	}
+
+	buf := make([]byte, 4096)
+	n, _ := r.Read(buf)
+	raw := string(buf[:n])
+
+	var parsed VerifyResult
+	if unmarshalErr := json.Unmarshal([]byte(raw), &parsed); unmarshalErr != nil {
+		t.Fatalf("unmarshal output: %v; output=%s", unmarshalErr, raw)
+	}
+
+	if parsed.Status != verifyStatusExecutionFailed {
+		t.Fatalf("status=%q want %q", parsed.Status, verifyStatusExecutionFailed)
+	}
+	if parsed.Error == nil {
+		t.Fatalf("expected error payload")
+	}
+	if parsed.Error.Category != string(commandErrorCategoryRepoBusy) {
+		t.Fatalf("error.category=%q want %q", parsed.Error.Category, commandErrorCategoryRepoBusy)
+	}
+	if parsed.HasErrors || parsed.HasWarnings {
+		t.Fatalf("expected has_errors=false and has_warnings=false for execution failure")
+	}
+}
+
+func TestRepoVerifyLockContentionReturnsTypedExitError(t *testing.T) {
+	repoDir := t.TempDir()
+	t.Setenv("AIMGR_REPO_PATH", repoDir)
+
+	manager := repo.NewManagerWithPath(repoDir)
+	lock, err := manager.AcquireRepoWriteLock(context.Background())
+	if err != nil {
+		t.Fatalf("acquire setup lock: %v", err)
+	}
+	defer func() { _ = lock.Unlock() }()
+
+	oldFormat := verifyFormatFlag
+	oldJSON := verifyJSON
+	verifyFormatFlag = "json"
+	verifyJSON = false
+	defer func() {
+		verifyFormatFlag = oldFormat
+		verifyJSON = oldJSON
+	}()
+
+	err = repoVerifyCmd.RunE(repoVerifyCmd, nil)
+	if err == nil {
+		t.Fatalf("expected error")
+	}
+
+	var cmdErr *commandExitError
+	if !errors.As(err, &cmdErr) {
+		t.Fatalf("expected commandExitError, got %T", err)
+	}
+	if cmdErr.ExitCode != commandExitCodeOperationalFailure {
+		t.Fatalf("exit code=%d want %d", cmdErr.ExitCode, commandExitCodeOperationalFailure)
+	}
+	if cmdErr.Category != commandErrorCategoryRepoBusy {
+		t.Fatalf("category=%q want %q", cmdErr.Category, commandErrorCategoryRepoBusy)
+	}
+}
+
+func TestRepoVerifyWarningsReturnCompletedWithFindingsExit(t *testing.T) {
+	repoDir := t.TempDir()
+	t.Setenv("AIMGR_REPO_PATH", repoDir)
+
+	manager := repo.NewManagerWithPath(repoDir)
+	if err := manager.Init(); err != nil {
+		t.Fatalf("init repo: %v", err)
+	}
+
+	commandPath := filepath.Join(repoDir, "commands", "warn-only.md")
+	if err := os.WriteFile(commandPath, []byte("---\ndescription: warn\n---\nbody\n"), 0644); err != nil {
+		t.Fatalf("write command: %v", err)
+	}
+
+	oldFormat := verifyFormatFlag
+	oldJSON := verifyJSON
+	verifyFormatFlag = "json"
+	verifyJSON = false
+	defer func() {
+		verifyFormatFlag = oldFormat
+		verifyJSON = oldJSON
+	}()
+
+	err := repoVerifyCmd.RunE(repoVerifyCmd, nil)
+	if err == nil {
+		t.Fatalf("expected completed-with-findings error")
+	}
+
+	var cmdErr *commandExitError
+	if !errors.As(err, &cmdErr) {
+		t.Fatalf("expected commandExitError, got %T", err)
+	}
+	if cmdErr.ExitCode != commandExitCodeCompletedWithFindings {
+		t.Fatalf("exit code=%d want %d", cmdErr.ExitCode, commandExitCodeCompletedWithFindings)
 	}
 }

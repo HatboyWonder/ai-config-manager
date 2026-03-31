@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -41,6 +42,74 @@ func TestAcquireCreatesLockDirectoryBeforeRepoInit(t *testing.T) {
 
 	if _, err := os.Stat(filepath.Join(repoPath, ".workspace", "locks")); err != nil {
 		t.Fatalf("lock directory not created: %v", err)
+	}
+}
+
+func TestAcquireRepoReadSharedSharedBehavior(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "repo", ".workspace", "locks", "repo.lock")
+
+	cmd := startLockHelperWithMode(t, path, "shared")
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	})
+
+	lock, ok, err := TryAcquireShared(path)
+	if err != nil {
+		t.Fatalf("TryAcquireShared() returned error: %v", err)
+	}
+
+	if runtime.GOOS == "windows" {
+		if ok {
+			_ = lock.Unlock()
+			t.Fatalf("TryAcquireShared() unexpectedly acquired lock on windows exclusive-only fallback")
+		}
+		return
+	}
+
+	if !ok {
+		t.Fatalf("TryAcquireShared() expected to acquire while another shared reader holds lock")
+	}
+	if err := lock.Unlock(); err != nil {
+		t.Fatalf("Unlock() failed: %v", err)
+	}
+}
+
+func TestAcquireSharedTimesOutWhileExclusiveHeld(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "repo", ".workspace", "locks", "repo.lock")
+
+	cmd := startLockHelperWithMode(t, path, "exclusive")
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	})
+
+	_, err := AcquireShared(context.Background(), path, 120*time.Millisecond)
+	if err == nil {
+		t.Fatalf("AcquireShared() expected timeout error")
+	}
+	var timeoutErr *AcquireTimeoutError
+	if !errors.As(err, &timeoutErr) {
+		t.Fatalf("AcquireShared() expected AcquireTimeoutError, got: %v", err)
+	}
+}
+
+func TestAcquireExclusiveTimesOutWhileSharedHeld(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "repo", ".workspace", "locks", "repo.lock")
+
+	cmd := startLockHelperWithMode(t, path, "shared")
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	})
+
+	_, err := AcquireExclusive(context.Background(), path, 120*time.Millisecond)
+	if err == nil {
+		t.Fatalf("AcquireExclusive() expected timeout error")
+	}
+	var timeoutErr *AcquireTimeoutError
+	if !errors.As(err, &timeoutErr) {
+		t.Fatalf("AcquireExclusive() expected AcquireTimeoutError, got: %v", err)
 	}
 }
 
@@ -110,6 +179,48 @@ func TestLockNonReentrant(t *testing.T) {
 	}
 }
 
+func TestLockReadWriteTransitionsNonReentrant(t *testing.T) {
+	t.Run("read to write transition", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "repo", ".workspace", "locks", "repo.lock")
+
+		readLock, err := AcquireShared(context.Background(), path, time.Second)
+		if err != nil {
+			t.Fatalf("AcquireShared() failed: %v", err)
+		}
+		t.Cleanup(func() {
+			_ = readLock.Unlock()
+		})
+
+		_, err = AcquireExclusive(context.Background(), path, 100*time.Millisecond)
+		if err == nil {
+			t.Fatalf("expected read->write transition to fail")
+		}
+		if !errors.Is(err, ErrNonReentrantLock) {
+			t.Fatalf("expected ErrNonReentrantLock, got %v", err)
+		}
+	})
+
+	t.Run("write to read transition", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "repo", ".workspace", "locks", "repo.lock")
+
+		writeLock, err := AcquireExclusive(context.Background(), path, time.Second)
+		if err != nil {
+			t.Fatalf("AcquireExclusive() failed: %v", err)
+		}
+		t.Cleanup(func() {
+			_ = writeLock.Unlock()
+		})
+
+		_, err = AcquireShared(context.Background(), path, 100*time.Millisecond)
+		if err == nil {
+			t.Fatalf("expected write->read transition to fail")
+		}
+		if !errors.Is(err, ErrNonReentrantLock) {
+			t.Fatalf("expected ErrNonReentrantLock, got %v", err)
+		}
+	})
+}
+
 func TestLockReleasedAfterSubprocessKill(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "repo", ".workspace", "locks", "repo.lock")
 
@@ -143,7 +254,16 @@ func TestHelperAcquireLockAndWait(t *testing.T) {
 		os.Exit(4)
 	}
 
-	lock, err := Acquire(context.Background(), path, time.Second)
+	lockMode := os.Getenv("AIMGR_TEST_HELPER_LOCK_MODE")
+	var (
+		lock *Lock
+		err  error
+	)
+	if lockMode == "shared" {
+		lock, err = AcquireShared(context.Background(), path, time.Second)
+	} else {
+		lock, err = AcquireExclusive(context.Background(), path, time.Second)
+	}
 	if err != nil {
 		os.Exit(3)
 	}
@@ -162,6 +282,11 @@ func TestHelperAcquireLockAndWait(t *testing.T) {
 
 func startLockHelper(t *testing.T, lockPath string) *exec.Cmd {
 	t.Helper()
+	return startLockHelperWithMode(t, lockPath, "exclusive")
+}
+
+func startLockHelperWithMode(t *testing.T, lockPath, lockMode string) *exec.Cmd {
+	t.Helper()
 
 	readyPath := filepath.Join(t.TempDir(), "ready")
 	// #nosec G702 -- os.Args[0] is the current test binary path.
@@ -170,6 +295,7 @@ func startLockHelper(t *testing.T, lockPath string) *exec.Cmd {
 		os.Environ(),
 		"AIMGR_TEST_HELPER_LOCK_PATH="+lockPath,
 		"AIMGR_TEST_HELPER_READY_PATH="+readyPath,
+		"AIMGR_TEST_HELPER_LOCK_MODE="+lockMode,
 		"AIMGR_TEST_HELPER_MODE=acquire-wait",
 	)
 

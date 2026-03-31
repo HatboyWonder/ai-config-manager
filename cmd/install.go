@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -172,6 +173,14 @@ Examples:
 			return fmt.Errorf("failed to create repository manager: %w", err)
 		}
 
+		repoLock, err := manager.AcquireRepoReadLock(cmd.Context())
+		if err != nil {
+			return fmt.Errorf("failed to acquire repository read lock at %s: %w", manager.RepoLockPath(), err)
+		}
+		defer func() {
+			_ = repoLock.Unlock()
+		}()
+
 		// Separate packages from other resources BEFORE pattern expansion
 		var packageRefs []string
 		var resourceRefs []string
@@ -275,6 +284,14 @@ func installFromManifest() error {
 	if err != nil {
 		return fmt.Errorf("failed to create repository manager: %w", err)
 	}
+
+	repoLock, err := manager.AcquireRepoReadLock(context.Background())
+	if err != nil {
+		return fmt.Errorf("failed to acquire repository read lock at %s: %w", manager.RepoLockPath(), err)
+	}
+	defer func() {
+		_ = repoLock.Unlock()
+	}()
 
 	// Load effective project manifest (base + optional local overlay)
 	m, view, err := loadEffectiveProjectManifest(projectPath)

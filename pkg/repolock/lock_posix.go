@@ -23,6 +23,13 @@ type Lock struct {
 	file *os.File
 }
 
+type lockMode int
+
+const (
+	lockModeShared lockMode = iota
+	lockModeExclusive
+)
+
 // Acquire acquires an exclusive lock for the provided path.
 //
 // Semantics:
@@ -31,6 +38,20 @@ type Lock struct {
 //   - Returns AcquireTimeoutError if timeout expires before lock acquisition.
 //   - Returns ErrNonReentrantLock if this process already holds the same lock.
 func Acquire(ctx context.Context, path string, timeout time.Duration) (*Lock, error) {
+	return acquireWithMode(ctx, path, timeout, lockModeExclusive)
+}
+
+// AcquireShared acquires a shared/read lock for the provided path.
+func AcquireShared(ctx context.Context, path string, timeout time.Duration) (*Lock, error) {
+	return acquireWithMode(ctx, path, timeout, lockModeShared)
+}
+
+// AcquireExclusive acquires an exclusive/write lock for the provided path.
+func AcquireExclusive(ctx context.Context, path string, timeout time.Duration) (*Lock, error) {
+	return acquireWithMode(ctx, path, timeout, lockModeExclusive)
+}
+
+func acquireWithMode(ctx context.Context, path string, timeout time.Duration, mode lockMode) (*Lock, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -69,7 +90,7 @@ func Acquire(ctx context.Context, path string, timeout time.Duration) (*Lock, er
 			return nil, convErr
 		}
 
-		err = unix.Flock(fd, unix.LOCK_EX|unix.LOCK_NB)
+		err = unix.Flock(fd, flockOperation(mode)|unix.LOCK_NB)
 		if err == nil {
 			return &Lock{path: path, file: file}, nil
 		}
@@ -96,6 +117,20 @@ func Acquire(ctx context.Context, path string, timeout time.Duration) (*Lock, er
 // TryAcquire attempts a non-blocking lock acquisition.
 // Returns acquired=false when another process already holds the lock.
 func TryAcquire(path string) (*Lock, bool, error) {
+	return tryAcquireWithMode(path, lockModeExclusive)
+}
+
+// TryAcquireShared attempts a non-blocking shared/read lock acquisition.
+func TryAcquireShared(path string) (*Lock, bool, error) {
+	return tryAcquireWithMode(path, lockModeShared)
+}
+
+// TryAcquireExclusive attempts a non-blocking exclusive/write lock acquisition.
+func TryAcquireExclusive(path string) (*Lock, bool, error) {
+	return tryAcquireWithMode(path, lockModeExclusive)
+}
+
+func tryAcquireWithMode(path string, mode lockMode) (*Lock, bool, error) {
 	if err := tracker.claim(path); err != nil {
 		return nil, false, err
 	}
@@ -119,7 +154,7 @@ func TryAcquire(path string) (*Lock, bool, error) {
 		return nil, false, convErr
 	}
 
-	err = unix.Flock(fd, unix.LOCK_EX|unix.LOCK_NB)
+	err = unix.Flock(fd, flockOperation(mode)|unix.LOCK_NB)
 	if err == nil {
 		return &Lock{path: path, file: file}, true, nil
 	}
@@ -132,6 +167,14 @@ func TryAcquire(path string) (*Lock, bool, error) {
 	}
 
 	return nil, false, fmt.Errorf("failed to acquire lock: %w", err)
+}
+
+func flockOperation(mode lockMode) int {
+	if mode == lockModeShared {
+		return unix.LOCK_SH
+	}
+
+	return unix.LOCK_EX
 }
 
 // Unlock releases the lock.

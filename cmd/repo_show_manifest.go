@@ -40,6 +40,18 @@ func runShowManifest(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	repoLock, err := mgr.AcquireRepoReadLock(cmd.Context())
+	if err != nil {
+		return fmt.Errorf("failed to acquire repository read lock at %s: %w", mgr.RepoLockPath(), err)
+	}
+	defer func() {
+		_ = repoLock.Unlock()
+	}()
+
+	if err := maybeHoldAfterRepoLock(cmd.Context(), "show-manifest"); err != nil {
+		return err
+	}
+
 	manifestPath := filepath.Join(mgr.GetRepoPath(), repomanifest.ManifestFileName)
 	if _, err := os.Stat(manifestPath); err != nil {
 		if os.IsNotExist(err) {

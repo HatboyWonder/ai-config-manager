@@ -91,7 +91,7 @@ Examples:
 			return err
 		}
 
-		repoLock, err := manager.AcquireRepoLock(cmd.Context())
+		repoLock, err := manager.AcquireRepoWriteLock(cmd.Context())
 		if err != nil {
 			return fmt.Errorf("failed to acquire repository lock at %s: %w", manager.RepoLockPath(), err)
 		}

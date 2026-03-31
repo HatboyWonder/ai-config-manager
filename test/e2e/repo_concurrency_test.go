@@ -192,6 +192,80 @@ func TestE2E_ConcurrentRepoSyncSerializesAndPreservesMetadata(t *testing.T) {
 	}
 }
 
+func TestE2E_RepoVerifyWaitsBehindSyncAndStateRemainsConsistent(t *testing.T) {
+	repoPath := t.TempDir()
+	sourceDir := createSingleSourceTree(t, t.TempDir(), "verify-vs-sync-cmd")
+
+	stdout, stderr, err := runAimgrWithEnv(t, "", map[string]string{"AIMGR_REPO_PATH": repoPath}, "repo", "init")
+	requireCLIProcessSuccess(t, stdout, stderr, err)
+	stdout, stderr, err = runAimgrWithEnv(t, "", map[string]string{"AIMGR_REPO_PATH": repoPath}, "repo", "add", "local:"+sourceDir)
+	requireCLIProcessSuccess(t, stdout, stderr, err)
+
+	signalDir := t.TempDir()
+	syncProc := startAimgrAsync(t, repoPath, map[string]string{
+		"AIMGR_TEST_REPO_HOLD_OP":    "sync",
+		"AIMGR_TEST_REPO_SIGNAL_DIR": signalDir,
+	}, "repo", "sync")
+
+	waitForMarker(t, filepath.Join(signalDir, "sync.ready"), 5*time.Second)
+	verifyProc := startAimgrAsync(t, repoPath, nil, "repo", "verify", "--format=json")
+	verifyProc.assertStillRunning(t)
+
+	releaseMarker(t, filepath.Join(signalDir, "sync.release"))
+
+	stdoutSync, stderrSync, errSync := syncProc.wait(t, 20*time.Second)
+	requireCLIProcessSuccess(t, stdoutSync, stderrSync, errSync)
+	stdoutVerify, stderrVerify, errVerify := verifyProc.wait(t, 20*time.Second)
+	requireCLIProcessSuccess(t, stdoutVerify, stderrVerify, errVerify)
+
+	if _, err := os.Stat(filepath.Join(repoPath, "commands", "verify-vs-sync-cmd.md")); err != nil {
+		t.Fatalf("expected synced command to exist after contention: %v", err)
+	}
+	if _, err := repomanifest.Load(repoPath); err != nil {
+		t.Fatalf("manifest corrupted after sync/verify contention: %v", err)
+	}
+	if _, err := sourcemetadata.Load(repoPath); err != nil {
+		t.Fatalf("source metadata corrupted after sync/verify contention: %v", err)
+	}
+}
+
+func TestE2E_ConcurrentRepoReadersRunTogether(t *testing.T) {
+	repoPath := t.TempDir()
+	sourceDir := createSingleSourceTree(t, t.TempDir(), "reader-concurrency-cmd")
+
+	stdout, stderr, err := runAimgrWithEnv(t, "", map[string]string{"AIMGR_REPO_PATH": repoPath}, "repo", "init")
+	requireCLIProcessSuccess(t, stdout, stderr, err)
+	stdout, stderr, err = runAimgrWithEnv(t, "", map[string]string{"AIMGR_REPO_PATH": repoPath}, "repo", "add", "local:"+sourceDir)
+	requireCLIProcessSuccess(t, stdout, stderr, err)
+
+	reader1Signals := t.TempDir()
+	verifyProc := startAimgrAsync(t, repoPath, map[string]string{
+		"AIMGR_TEST_REPO_HOLD_OP":     "verify-read",
+		"AIMGR_TEST_REPO_SIGNAL_DIR":  reader1Signals,
+		"AIMGR_TEST_REPO_SIGNAL_NAME": "verify-reader",
+	}, "repo", "verify", "--format=json")
+
+	waitForMarker(t, filepath.Join(reader1Signals, "verify-reader.ready"), 5*time.Second)
+
+	reader2Signals := t.TempDir()
+	listProc := startAimgrAsync(t, repoPath, map[string]string{
+		"AIMGR_TEST_REPO_HOLD_OP":     "list",
+		"AIMGR_TEST_REPO_SIGNAL_DIR":  reader2Signals,
+		"AIMGR_TEST_REPO_SIGNAL_NAME": "list-reader",
+	}, "repo", "list", "--format=json")
+
+	// If list is blocked by verify's read-lock, this marker would not appear.
+	waitForMarker(t, filepath.Join(reader2Signals, "list-reader.ready"), 5*time.Second)
+
+	releaseMarker(t, filepath.Join(reader2Signals, "list-reader.release"))
+	releaseMarker(t, filepath.Join(reader1Signals, "verify-reader.release"))
+
+	stdoutList, stderrList, errList := listProc.wait(t, 20*time.Second)
+	requireCLIProcessSuccess(t, stdoutList, stderrList, errList)
+	stdoutVerify, stderrVerify, errVerify := verifyProc.wait(t, 20*time.Second)
+	requireCLIProcessSuccess(t, stdoutVerify, stderrVerify, errVerify)
+}
+
 func TestE2E_ConcurrentAddAndRemoveSerializeWithoutLosingState(t *testing.T) {
 	repoPath := t.TempDir()
 	sourceA := createSingleSourceTree(t, t.TempDir(), "remove-me")

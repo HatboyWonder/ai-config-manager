@@ -1,9 +1,11 @@
 package test
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -123,9 +125,16 @@ func TestCLIRepoVerifyPackageJSON(t *testing.T) {
 	}
 
 	// Test: verify --format=json
-	output, _ := runAimgr(t, "repo", "verify", "--format=json")
+	output, err := runAimgr(t, "repo", "verify", "--format=json")
+	if err == nil {
+		t.Fatalf("expected exit code 1 for completed-with-findings")
+	}
+	if exitErr, ok := err.(*exec.ExitError); !ok || exitErr.ExitCode() != 1 {
+		t.Fatalf("expected exit code 1, got err=%v", err)
+	}
 
 	var result struct {
+		Status                  string `json:"status"`
 		PackagesWithMissingRefs []struct {
 			Name             string   `json:"name"`
 			Path             string   `json:"path"`
@@ -137,6 +146,10 @@ func TestCLIRepoVerifyPackageJSON(t *testing.T) {
 
 	if err := json.Unmarshal([]byte(output), &result); err != nil {
 		t.Fatalf("Failed to parse JSON: %v\nOutput: %s", err, output)
+	}
+
+	if result.Status != "completed_with_findings" {
+		t.Errorf("Expected status=completed_with_findings, got %q", result.Status)
 	}
 
 	// Check that package issue was detected
@@ -177,6 +190,53 @@ func TestCLIRepoVerifyPackageJSON(t *testing.T) {
 	// Should have errors
 	if !result.HasErrors {
 		t.Errorf("Expected has_errors=true for package with missing refs")
+	}
+}
+
+func TestCLIRepoVerifyJSONOperationalFailureIncludesCategory(t *testing.T) {
+	repoDir := t.TempDir()
+	t.Setenv("AIMGR_REPO_PATH", repoDir)
+
+	manager := repo.NewManagerWithPath(repoDir)
+	lock, err := manager.AcquireRepoWriteLock(context.Background())
+	if err != nil {
+		t.Fatalf("failed to acquire setup lock: %v", err)
+	}
+	defer func() { _ = lock.Unlock() }()
+
+	output, err := runAimgr(t, "repo", "verify", "--format=json")
+	if err == nil {
+		t.Fatalf("expected non-zero exit")
+	}
+	exitErr, ok := err.(*exec.ExitError)
+	if !ok {
+		t.Fatalf("expected ExitError, got %T", err)
+	}
+	if exitErr.ExitCode() != 2 {
+		t.Fatalf("expected exit code 2, got %d\noutput=%s", exitErr.ExitCode(), output)
+	}
+
+	var result struct {
+		Status      string `json:"status"`
+		HasErrors   bool   `json:"has_errors"`
+		HasWarnings bool   `json:"has_warnings"`
+		Error       struct {
+			Category string `json:"category"`
+			Message  string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(output), &result); err != nil {
+		t.Fatalf("failed to parse JSON: %v\noutput=%s", err, output)
+	}
+
+	if result.Status != "execution_failed" {
+		t.Fatalf("status=%q want execution_failed", result.Status)
+	}
+	if result.Error.Category != "repo_busy" {
+		t.Fatalf("error.category=%q want repo_busy", result.Error.Category)
+	}
+	if result.HasErrors || result.HasWarnings {
+		t.Fatalf("expected has_errors/has_warnings false on execution failure")
 	}
 }
 

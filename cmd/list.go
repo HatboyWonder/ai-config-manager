@@ -79,6 +79,18 @@ See also:
 			return err
 		}
 
+		repoLock, err := manager.AcquireRepoReadLock(cmd.Context())
+		if err != nil {
+			return fmt.Errorf("failed to acquire repository read lock at %s: %w", manager.RepoLockPath(), err)
+		}
+		defer func() {
+			_ = repoLock.Unlock()
+		}()
+
+		if err := maybeHoldAfterRepoLock(cmd.Context(), "list"); err != nil {
+			return err
+		}
+
 		// Handle pattern-based filtering
 		if len(args) > 0 {
 			// Parse pattern to check if it's a package pattern

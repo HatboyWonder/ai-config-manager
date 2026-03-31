@@ -41,9 +41,15 @@ All repo mutations are coordinated with OS-backed advisory file locks under:
 
 Lock files:
 
-- Repo-wide lock: `<repo>/.workspace/locks/repo.lock`
+- Repo-wide lock: `<repo>/.workspace/locks/repo.lock` (single path for both read and write)
 - Workspace metadata lock: `<repo>/.workspace/locks/workspace-metadata.lock`
 - Per-cache lock: `<repo>/.workspace/locks/caches/<cache-hash>.lock`
+
+Repo lock modes:
+
+- **Read/shared lock**: allows concurrent readers on POSIX (`flock` `LOCK_SH`)
+- **Write/exclusive lock**: blocks all other readers/writers (`flock` `LOCK_EX`)
+- Read and write modes use the **same `repo.lock` file**.
 
 Lock ordering is strict and must never be reversed:
 
@@ -56,12 +62,51 @@ Rules:
 - Top-level mutating CLI commands are outermost repo-lock holders.
 - Workspace cache operations may take cache lock and metadata lock, but must not try to take repo lock from inside those sections.
 - Workspace metadata lock is only for short metadata read-modify-write sections (not long clone/fetch/pull work).
+- Cache and workspace metadata locks remain **exclusive-only**.
+- Locks are intentionally **non-reentrant per process and path**: acquiring the same lock path twice in one process fails with `ErrNonReentrantLock`.
+- Same-process lock transition attempts on the same path (read→write or write→read) also fail through the same non-reentrant contract (no implicit upgrade/downgrade protocol).
 
 Scope / limitations:
 
 - These locks are implemented with `flock` on Unix/POSIX builds.
 - On Windows, locks use `LockFileEx`/`UnlockFileEx` from the Windows API.
+- **Windows fallback behavior**: repo read-lock APIs currently map to exclusive `LockFileEx` locking, so concurrent shared readers are not currently enabled on Windows.
+- `flock` does not provide fairness guarantees; under heavy contention, lock starvation is possible. `aimgr` uses timeout-bounded acquisition rather than starvation prevention.
 - Locks serialize *aimgr* mutation paths; they do not prevent arbitrary external tools from modifying files directly.
+
+## Repo Lock Command Matrix
+
+Use this matrix when adding or changing commands that touch shared repo state.
+
+| Command / Path | Lock mode | Why |
+|---|---|---|
+| `aimgr repo init` | write | Creates/updates repo structure and metadata. |
+| `aimgr repo add` | write | Adds resources/metadata to shared repo state. |
+| `aimgr repo sync` | write | Mutates repo content and source metadata. |
+| `aimgr repo remove` | write | Removes source entries and associated metadata. |
+| `aimgr repo drop` | write | Deletes repository data. |
+| `aimgr repo apply-manifest` | write | Applies source mutations from manifest. |
+| `aimgr repo override-source` | write | Mutates source overrides/metadata. |
+| `aimgr repo prune` | write | Deletes stale resources/metadata. |
+| `aimgr repo repair` | write | Rewrites repo metadata/content for consistency. |
+| `aimgr repo verify --fix` | write | Applies corrective repo mutations. |
+| `aimgr repo verify` (read-only) | read | Scans shared repo files/metadata without mutation. |
+| `aimgr repo info` | read | Reads repo manifest/resources/metadata snapshot. |
+| `aimgr repo list` | read | Reads resource/package/metadata listings. |
+| `aimgr repo describe` / `repo show` | read | Reads resource/package definitions + metadata. |
+| `aimgr repo show-manifest` | read | Reads repo manifest snapshot. |
+| `aimgr install` | read | Expands repo patterns/packages and validates resources during install planning. |
+| `installFromManifest` (internal) | read | Reads repo package/resource definitions while expanding manifest refs. |
+| package install expansion (`installPackage`) | read (via `install`) | Reads package definitions and member resources from shared repo state. |
+| `aimgr repair` (project) | read | Expands package refs and validates repo-backed declared resources before reconcile. |
+| `aimgr verify` (project) | read | Resolves package refs and repo-backed membership during manifest checks/reconcile wrapper. |
+| `aimgr list` (installed resources) | read | Expands manifest package refs by reading repo package definitions. |
+| `aimgr uninstall` | read | Reads repo package definitions for `package/*` uninstall expansion. |
+| repo-backed shell completions | try-read (non-blocking) | Completions must stay responsive; return no dynamic suggestions while writers hold lock. |
+
+Intentional no-lock helpers:
+
+- `cmd.ExpandPattern` does not acquire repo locks itself. Callers must hold the appropriate repo lock before invoking it when a stable repo snapshot is required.
 
 ## Atomic Write Model (Repo-Managed State Files)
 

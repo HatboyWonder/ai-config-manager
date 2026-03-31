@@ -80,6 +80,18 @@ Note: 'repo show' is deprecated, use 'repo describe' instead.`,
 			return err
 		}
 
+		repoLock, err := manager.AcquireRepoReadLock(cmd.Context())
+		if err != nil {
+			return fmt.Errorf("failed to acquire repository read lock at %s: %w", manager.RepoLockPath(), err)
+		}
+		defer func() {
+			_ = repoLock.Unlock()
+		}()
+
+		if err := maybeHoldAfterRepoLock(cmd.Context(), "describe"); err != nil {
+			return err
+		}
+
 		// Collect all matches from all arguments
 		var allMatches []string
 		seen := make(map[string]bool)

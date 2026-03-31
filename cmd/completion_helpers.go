@@ -6,6 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/dynatrace-oss/ai-config-manager/v3/pkg/repo"
 	"github.com/dynatrace-oss/ai-config-manager/v3/pkg/repomanifest"
 	"github.com/dynatrace-oss/ai-config-manager/v3/pkg/resource"
 )
@@ -53,6 +54,21 @@ type completionOptions struct {
 	multiArg        bool // Support completing multiple resource arguments
 }
 
+// tryAcquireCompletionReadLock applies the completion contention policy:
+// completion must stay responsive, so dynamic repo-backed suggestions use a
+// non-blocking repo read-lock attempt. If a writer currently holds the lock,
+// completions return quickly with no dynamic suggestions instead of blocking.
+func tryAcquireCompletionReadLock(manager *repo.Manager) (func(), bool) {
+	repoLock, acquired, err := manager.TryAcquireRepoReadLock()
+	if err != nil || !acquired {
+		return nil, false
+	}
+
+	return func() {
+		_ = repoLock.Unlock()
+	}, true
+}
+
 // completeResourcesWithOptions is the base completion function for resource arguments
 // Provides shell completion for resource arguments in "type/name" format
 // Supports completing both the type prefix and resource names after the slash
@@ -61,11 +77,6 @@ func completeResourcesWithOptions(opts completionOptions) func(*cobra.Command, [
 		// For single-arg commands, stop suggesting after first argument
 		if !opts.multiArg && len(args) > 0 {
 			return nil, cobra.ShellCompDirectiveNoFileComp
-		}
-
-		manager, err := NewManagerWithLogLevel()
-		if err != nil {
-			return nil, cobra.ShellCompDirectiveError
 		}
 
 		// If toComplete doesn't contain a slash, suggest type prefixes
@@ -82,6 +93,17 @@ func completeResourcesWithOptions(opts completionOptions) func(*cobra.Command, [
 			}
 			return matches, cobra.ShellCompDirectiveNoSpace
 		}
+
+		manager, err := NewManagerWithLogLevel()
+		if err != nil {
+			return nil, cobra.ShellCompDirectiveError
+		}
+
+		unlock, ok := tryAcquireCompletionReadLock(manager)
+		if !ok {
+			return nil, cobra.ShellCompDirectiveNoFileComp
+		}
+		defer unlock()
 
 		// Parse the type prefix
 		parts := strings.SplitN(toComplete, "/", 2)
@@ -150,6 +172,12 @@ func completeResourceNames(resType resource.ResourceType) func(cmd *cobra.Comman
 		if err != nil {
 			return nil, cobra.ShellCompDirectiveError
 		}
+
+		unlock, ok := tryAcquireCompletionReadLock(manager)
+		if !ok {
+			return nil, cobra.ShellCompDirectiveNoFileComp
+		}
+		defer unlock()
 
 		t := resType
 		resources, err := manager.List(&t)
@@ -281,6 +309,12 @@ func completeSourceNames(cmd *cobra.Command, args []string, toComplete string) (
 	if err != nil {
 		return nil, cobra.ShellCompDirectiveError
 	}
+
+	unlock, ok := tryAcquireCompletionReadLock(manager)
+	if !ok {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+	defer unlock()
 
 	// Load manifest
 	manifest, err := repomanifest.Load(manager.GetRepoPath())

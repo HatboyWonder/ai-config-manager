@@ -15,10 +15,12 @@ import (
 // Environment contract:
 //   - AIMGR_TEST_REPO_HOLD_OP: operation key to hold (for example: "init")
 //   - AIMGR_TEST_REPO_SIGNAL_DIR: directory where ready/release markers live
+//   - AIMGR_TEST_REPO_SIGNAL_NAME (optional): marker basename override used to
+//     coordinate multiple concurrent processes for the same operation.
 //
 // Marker files:
-//   - <signal-dir>/<op>.ready
-//   - <signal-dir>/<op>.release
+//   - <signal-dir>/<signal-name>.ready
+//   - <signal-dir>/<signal-name>.release
 func maybeHoldAfterRepoLock(ctx context.Context, op string) error {
 	holdOp := strings.TrimSpace(os.Getenv("AIMGR_TEST_REPO_HOLD_OP"))
 	if holdOp == "" || holdOp != op {
@@ -35,8 +37,13 @@ func maybeHoldAfterRepoLock(ctx context.Context, op string) error {
 		return fmt.Errorf("failed to create test signal directory: %w", err)
 	}
 
-	readyPath := filepath.Join(signalDir, op+".ready")
-	releasePath := filepath.Join(signalDir, op+".release")
+	signalName := strings.TrimSpace(os.Getenv("AIMGR_TEST_REPO_SIGNAL_NAME"))
+	if signalName == "" {
+		signalName = op
+	}
+
+	readyPath := filepath.Join(signalDir, signalName+".ready")
+	releasePath := filepath.Join(signalDir, signalName+".release")
 	// #nosec G703 -- readyPath is a test-only marker under AIMGR_TEST_REPO_SIGNAL_DIR.
 	if err := os.WriteFile(readyPath, []byte("ready"), 0644); err != nil {
 		return fmt.Errorf("failed to write test ready marker: %w", err)

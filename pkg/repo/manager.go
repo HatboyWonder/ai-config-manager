@@ -103,30 +103,74 @@ func (m *Manager) GetRepoPath() string {
 
 // Locking conventions for repo mutation (foundational contract):
 //
-// - Lock ordering is always: repo lock -> cache lock -> workspace metadata lock.
-// - Repo lock is non-reentrant by design. Do not attempt to acquire repo lock
-//   from helper methods that can be called by already-locked operations.
+// - Lock ordering is always: repo lock (read or write) -> cache lock (exclusive)
+//   -> workspace metadata lock (exclusive).
+// - Repo lock is non-reentrant by design. Same-process reacquisition of the same
+//   path fails with ErrNonReentrantLock, including read->write and write->read
+//   transition attempts.
 // - Top-level CLI command handlers should hold the outer repo lock and call
 //   internal helpers (including Init) inside that critical section.
 
 // AcquireRepoLock acquires the repository-wide cross-process lock with default
 // CLI semantics: blocking up to 30s and honoring context cancellation.
+//
+// Deprecated: use AcquireRepoWriteLock for explicit mode selection.
 func (m *Manager) AcquireRepoLock(ctx context.Context) (*repolock.Lock, error) {
-	return m.locks.AcquireRepoLock(ctx)
+	return m.AcquireRepoWriteLock(ctx)
 }
 
 // AcquireRepoLockWithTimeout acquires the repository-wide lock with a caller
 // provided timeout.
+//
+// Deprecated: use AcquireRepoWriteLockWithTimeout for explicit mode selection.
 func (m *Manager) AcquireRepoLockWithTimeout(ctx context.Context, timeout time.Duration) (*repolock.Lock, error) {
-	return repolock.Acquire(ctx, m.locks.RepoLockPath(), timeout)
+	return m.AcquireRepoWriteLockWithTimeout(ctx, timeout)
 }
 
 // TryAcquireRepoLock attempts to acquire the repository-wide lock without waiting.
+//
+// Deprecated: use TryAcquireRepoWriteLock for explicit mode selection.
 func (m *Manager) TryAcquireRepoLock() (*repolock.Lock, bool, error) {
-	return m.locks.TryAcquireRepoLock()
+	return m.TryAcquireRepoWriteLock()
 }
 
-// AcquireWorkspaceMetadataLock acquires the shared workspace metadata lock.
+// AcquireRepoReadLock acquires the repository-wide shared/read lock with default
+// CLI semantics: blocking up to 30s and honoring context cancellation.
+func (m *Manager) AcquireRepoReadLock(ctx context.Context) (*repolock.Lock, error) {
+	return m.locks.AcquireRepoReadLock(ctx)
+}
+
+// AcquireRepoReadLockWithTimeout acquires the repository-wide shared/read lock
+// with a caller-provided timeout.
+func (m *Manager) AcquireRepoReadLockWithTimeout(ctx context.Context, timeout time.Duration) (*repolock.Lock, error) {
+	return repolock.AcquireShared(ctx, m.locks.RepoLockPath(), timeout)
+}
+
+// TryAcquireRepoReadLock attempts to acquire the repository-wide shared/read
+// lock without waiting.
+func (m *Manager) TryAcquireRepoReadLock() (*repolock.Lock, bool, error) {
+	return m.locks.TryAcquireRepoReadLock()
+}
+
+// AcquireRepoWriteLock acquires the repository-wide exclusive/write lock with
+// default CLI semantics: blocking up to 30s and honoring context cancellation.
+func (m *Manager) AcquireRepoWriteLock(ctx context.Context) (*repolock.Lock, error) {
+	return m.locks.AcquireRepoWriteLock(ctx)
+}
+
+// AcquireRepoWriteLockWithTimeout acquires the repository-wide exclusive/write
+// lock with a caller-provided timeout.
+func (m *Manager) AcquireRepoWriteLockWithTimeout(ctx context.Context, timeout time.Duration) (*repolock.Lock, error) {
+	return repolock.AcquireExclusive(ctx, m.locks.RepoLockPath(), timeout)
+}
+
+// TryAcquireRepoWriteLock attempts to acquire the repository-wide
+// exclusive/write lock without waiting.
+func (m *Manager) TryAcquireRepoWriteLock() (*repolock.Lock, bool, error) {
+	return m.locks.TryAcquireRepoWriteLock()
+}
+
+// AcquireWorkspaceMetadataLock acquires the exclusive workspace metadata lock.
 func (m *Manager) AcquireWorkspaceMetadataLock(ctx context.Context) (*repolock.Lock, error) {
 	return m.locks.AcquireWorkspaceMetadataLock(ctx)
 }

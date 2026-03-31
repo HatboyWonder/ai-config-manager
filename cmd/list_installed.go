@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -30,9 +31,15 @@ type listInstalledState struct {
 	expandedManifest map[string]bool
 	manager          interface{ GetRepoPath() string }
 	packageCache     map[string]*resource.Package
+	repoLock         interface{ Unlock() error }
+	err              error
 }
 
 func newListInstalledState(projectPath string) *listInstalledState {
+	return newListInstalledStateWithContext(context.Background(), projectPath)
+}
+
+func newListInstalledStateWithContext(ctx context.Context, projectPath string) *listInstalledState {
 	state := &listInstalledState{
 		packageCache: make(map[string]*resource.Package),
 	}
@@ -56,7 +63,15 @@ func newListInstalledState(projectPath string) *listInstalledState {
 	// Create repo manager at most once for this command invocation.
 	if hasPackageRefs {
 		if manager, managerErr := NewManagerWithLogLevel(); managerErr == nil {
-			state.manager = manager
+			repoLock, lockErr := manager.AcquireRepoReadLock(ctx)
+			if lockErr == nil {
+				state.manager = manager
+				state.repoLock = repoLock
+			} else {
+				state.err = fmt.Errorf("failed to acquire repository read lock at %s: %w", manager.RepoLockPath(), lockErr)
+			}
+		} else {
+			state.err = fmt.Errorf("failed to create repository manager: %w", managerErr)
 		}
 	}
 
@@ -79,6 +94,14 @@ func newListInstalledState(projectPath string) *listInstalledState {
 	}
 
 	return state
+}
+
+func (s *listInstalledState) close() {
+	if s == nil || s.repoLock == nil {
+		return
+	}
+	_ = s.repoLock.Unlock()
+	s.repoLock = nil
 }
 
 func (s *listInstalledState) getPackage(packageName string) *resource.Package {
@@ -206,7 +229,11 @@ Examples:
 			return fmt.Errorf("failed to list installed resources: %w", err)
 		}
 
-		state := newListInstalledState(projectPath)
+		state := newListInstalledStateWithContext(cmd.Context(), projectPath)
+		defer state.close()
+		if state.err != nil {
+			return state.err
+		}
 
 		// Inject package entries from the manifest (packages have no symlinks,
 		// so installer.List() never returns them — we add them manually here).
@@ -275,7 +302,9 @@ type ResourceInfo struct {
 // including individual resources that are members of declared packages.
 // Returns nil if no manifest exists or cannot be loaded (signals "no manifest").
 func expandManifestResources(projectPath string) map[string]bool {
-	return newListInstalledState(projectPath).expandedManifest
+	state := newListInstalledState(projectPath)
+	defer state.close()
+	return state.expandedManifest
 }
 
 // appendManifestPackages reads ai.package.yaml and appends package/ entries as Resource objects

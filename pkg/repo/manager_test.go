@@ -125,21 +125,61 @@ func TestResolveRepoPath(t *testing.T) {
 func TestManagerRepoLockNonReentrant(t *testing.T) {
 	manager := NewManagerWithPath(filepath.Join(t.TempDir(), "repo"))
 
-	lock, err := manager.AcquireRepoLock(context.Background())
+	lock, err := manager.AcquireRepoWriteLock(context.Background())
 	if err != nil {
-		t.Fatalf("AcquireRepoLock() failed: %v", err)
+		t.Fatalf("AcquireRepoWriteLock() failed: %v", err)
 	}
 	t.Cleanup(func() {
 		_ = lock.Unlock()
 	})
 
-	_, err = manager.AcquireRepoLockWithTimeout(context.Background(), 100*time.Millisecond)
+	_, err = manager.AcquireRepoWriteLockWithTimeout(context.Background(), 100*time.Millisecond)
 	if err == nil {
 		t.Fatalf("expected nested repo lock acquisition to fail")
 	}
 	if !errors.Is(err, repolock.ErrNonReentrantLock) {
 		t.Fatalf("expected ErrNonReentrantLock, got %v", err)
 	}
+}
+
+func TestManagerRepoLockReadWriteTransitionsNonReentrant(t *testing.T) {
+	manager := NewManagerWithPath(filepath.Join(t.TempDir(), "repo"))
+
+	t.Run("read to write transition", func(t *testing.T) {
+		readLock, err := manager.AcquireRepoReadLock(context.Background())
+		if err != nil {
+			t.Fatalf("AcquireRepoReadLock() failed: %v", err)
+		}
+		t.Cleanup(func() {
+			_ = readLock.Unlock()
+		})
+
+		_, err = manager.AcquireRepoWriteLockWithTimeout(context.Background(), 100*time.Millisecond)
+		if err == nil {
+			t.Fatalf("expected read->write transition to fail")
+		}
+		if !errors.Is(err, repolock.ErrNonReentrantLock) {
+			t.Fatalf("expected ErrNonReentrantLock, got %v", err)
+		}
+	})
+
+	t.Run("write to read transition", func(t *testing.T) {
+		writeLock, err := manager.AcquireRepoWriteLock(context.Background())
+		if err != nil {
+			t.Fatalf("AcquireRepoWriteLock() failed: %v", err)
+		}
+		t.Cleanup(func() {
+			_ = writeLock.Unlock()
+		})
+
+		_, err = manager.AcquireRepoReadLockWithTimeout(context.Background(), 100*time.Millisecond)
+		if err == nil {
+			t.Fatalf("expected write->read transition to fail")
+		}
+		if !errors.Is(err, repolock.ErrNonReentrantLock) {
+			t.Fatalf("expected ErrNonReentrantLock, got %v", err)
+		}
+	})
 }
 
 func TestInitCreatesManifestInExistingRepo(t *testing.T) {

@@ -27,6 +27,14 @@ make e2e-test         # Full CLI tests (~1-2min)
   - user-facing behavior (second process waits or fails with clear lock-acquisition errors under contention)
 - Keep contention tests isolated to temp repos and temp source fixtures.
 
+For repo lock primitives, include focused coverage for:
+
+- shared/shared behavior (concurrent readers succeed on POSIX)
+- shared/exclusive contention both directions (reader blocks writer, writer blocks reader)
+- in-process same-path non-reentrancy (second acquisition fails with `ErrNonReentrantLock`)
+- same-path transition attempts (read→write and write→read fail with `ErrNonReentrantLock`)
+- explicit Windows behavior verification for the read/write API (including exclusive-only fallback when applicable)
+
 ## Persistence / Atomic-Write Expectations
 
 Repo-managed state persistence uses atomic replacement (not plain in-place

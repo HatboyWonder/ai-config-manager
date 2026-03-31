@@ -51,6 +51,14 @@ Examples:
 		if err != nil {
 			return err
 		}
+
+		repoLock, err := manager.AcquireRepoReadLock(cmd.Context())
+		if err != nil {
+			return fmt.Errorf("failed to acquire repository read lock at %s: %w", manager.RepoLockPath(), err)
+		}
+		defer func() {
+			_ = repoLock.Unlock()
+		}()
 		repoPath := manager.GetRepoPath()
 
 		ownedDirs, err := detectOwnedResourceDirs(projectPath)

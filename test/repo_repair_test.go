@@ -1,8 +1,10 @@
 package test
 
 import (
+	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -150,6 +152,7 @@ func TestRepoRepairIntegration_JSONOutput(t *testing.T) {
 
 	// Parse and validate JSON
 	var result struct {
+		Status         string      `json:"status"`
 		FixedCount     int         `json:"fixed_count"`
 		UnfixableCount int         `json:"unfixable_count"`
 		DryRun         bool        `json:"dry_run"`
@@ -159,8 +162,92 @@ func TestRepoRepairIntegration_JSONOutput(t *testing.T) {
 	if err := json.Unmarshal([]byte(output), &result); err != nil {
 		t.Fatalf("Failed to parse JSON output: %v\nOutput: %s", err, output)
 	}
+	if result.Status != "clean" {
+		t.Fatalf("expected status=clean, got %q", result.Status)
+	}
+
 	// If we got here the JSON was valid; log counts for debugging
 	t.Logf("JSON result: fixed=%d unfixable=%d dry_run=%v", result.FixedCount, result.UnfixableCount, result.DryRun)
+}
+
+func TestRepoRepairIntegration_UnfixableExitCodeAndStatus(t *testing.T) {
+	p := setupRepairTestProject(t)
+
+	packagePath := filepath.Join(p.repoDir, "packages", "broken.package.json")
+	content := `{
+  "name": "broken",
+  "description": "broken refs",
+  "resources": ["command/missing"]
+}`
+	if err := os.WriteFile(packagePath, []byte(content), 0644); err != nil {
+		t.Fatalf("write package: %v", err)
+	}
+
+	output, err := runAimgr(t, "repo", "repair", "--format=json")
+	if err == nil {
+		t.Fatalf("expected exit code 1")
+	}
+	exitErr, ok := err.(*exec.ExitError)
+	if !ok {
+		t.Fatalf("expected ExitError, got %T", err)
+	}
+	if exitErr.ExitCode() != 1 {
+		t.Fatalf("expected exit code 1, got %d\noutput=%s", exitErr.ExitCode(), output)
+	}
+
+	var result struct {
+		Status         string `json:"status"`
+		UnfixableCount int    `json:"unfixable_count"`
+	}
+	if err := json.Unmarshal([]byte(output), &result); err != nil {
+		t.Fatalf("parse json: %v\noutput=%s", err, output)
+	}
+	if result.Status != "completed_with_findings" {
+		t.Fatalf("status=%q want completed_with_findings", result.Status)
+	}
+	if result.UnfixableCount == 0 {
+		t.Fatalf("expected unfixable_count > 0")
+	}
+}
+
+func TestRepoRepairIntegration_OperationalFailureExitCodeAndCategory(t *testing.T) {
+	p := setupRepairTestProject(t)
+
+	lock, err := p.manager.AcquireRepoWriteLock(context.Background())
+	if err != nil {
+		t.Fatalf("acquire setup lock: %v", err)
+	}
+	defer func() { _ = lock.Unlock() }()
+
+	output, err := runAimgr(t, "repo", "repair", "--format=json")
+	if err == nil {
+		t.Fatalf("expected exit code 2")
+	}
+	exitErr, ok := err.(*exec.ExitError)
+	if !ok {
+		t.Fatalf("expected ExitError, got %T", err)
+	}
+	if exitErr.ExitCode() != 2 {
+		t.Fatalf("expected exit code 2, got %d\noutput=%s", exitErr.ExitCode(), output)
+	}
+
+	var result struct {
+		Status      string `json:"status"`
+		HasErrors   bool   `json:"has_errors"`
+		HasWarnings bool   `json:"has_warnings"`
+		Error       struct {
+			Category string `json:"category"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(output), &result); err != nil {
+		t.Fatalf("parse json: %v\noutput=%s", err, output)
+	}
+	if result.Status != "execution_failed" {
+		t.Fatalf("status=%q want execution_failed", result.Status)
+	}
+	if result.Error.Category != "repo_busy" {
+		t.Fatalf("error.category=%q want repo_busy", result.Error.Category)
+	}
 }
 
 // containsAny returns true if s contains any of the substrings.

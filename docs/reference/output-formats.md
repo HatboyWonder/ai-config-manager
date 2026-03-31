@@ -672,6 +672,7 @@ Check repository health with structured output:
 ```bash
 $ aimgr repo verify --format=json
 {
+  "status": "clean",
   "resources_without_metadata": [],
   "orphaned_metadata": [],
   "missing_source_paths": [],
@@ -681,6 +682,24 @@ $ aimgr repo verify --format=json
   "has_warnings": false
 }
 ```
+
+`repo verify` status and exit contract:
+
+- Exit `0` + `status="clean"`: verification completed with no findings
+- Exit `1` + `status="completed_with_findings"`: verification completed and found issues/warnings
+- Exit `2` + `status="execution_failed"`: verification could not complete (check `error.category`)
+
+Operational failure categories (`error.category`) include:
+
+- `repo_busy` (lock timeout/contention/cancel)
+- `io_error`
+- `parse_error`
+- `internal_error`
+
+Compatibility note for existing automation:
+
+- `has_errors` and `has_warnings` are preserved for compatibility and only describe completed verification results.
+- For `status="execution_failed"`, both fields are `false`; callers should branch on `status` first.
 
 **CI/CD Example:**
 ```bash
@@ -694,6 +713,35 @@ fi
 ```
 
 **Note:** The `--json` flag is deprecated. Use `--format=json` instead.
+
+### repo repair - Repository Repair Results
+
+`repo repair --format=json` returns structured repair results with a top-level status.
+
+Example (clean result):
+
+```bash
+$ aimgr repo repair --format=json
+{
+  "status": "clean",
+  "dry_run": false,
+  "fixed_count": 0,
+  "unfixable_count": 0
+}
+```
+
+`repo repair` status and exit contract:
+
+- Exit `0` + `status="clean"`: repair completed and no unfixable issues remain
+- Exit `1` + `status="completed_with_findings"`: repair completed but unfixable issues remain
+- Exit `2` + `status="execution_failed"`: repair could not complete (check `error.category`)
+
+Operational failure categories (`error.category`) include:
+
+- `repo_busy` (lock timeout/contention/cancel)
+- `io_error`
+- `parse_error`
+- `internal_error`
 
 ### repo prune - Workspace Cleanup
 

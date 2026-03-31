@@ -19,6 +19,8 @@ import (
 
 // VerifyResult contains the results of repository verification
 type VerifyResult struct {
+	Status                   string          `json:"status" yaml:"status"`
+	Error                    *CommandFailure `json:"error,omitempty" yaml:"error,omitempty"`
 	ResourcesWithoutMetadata []ResourceIssue `json:"resources_without_metadata,omitempty" yaml:"resources_without_metadata,omitempty"`
 	OrphanedMetadata         []MetadataIssue `json:"orphaned_metadata,omitempty" yaml:"orphaned_metadata,omitempty"`
 	MissingSourcePaths       []MetadataIssue `json:"missing_source_paths,omitempty" yaml:"missing_source_paths,omitempty"`
@@ -59,6 +61,18 @@ type PackageIssue struct {
 	MissingResources []string `json:"missing_resources" yaml:"missing_resources"`
 }
 
+// CommandFailure describes a machine-readable operational command failure.
+type CommandFailure struct {
+	Category string `json:"category" yaml:"category"`
+	Message  string `json:"message" yaml:"message"`
+}
+
+const (
+	verifyStatusClean                 = "clean"
+	verifyStatusCompletedWithFindings = "completed_with_findings"
+	verifyStatusExecutionFailed       = "execution_failed"
+)
+
 var (
 	verifyFix        bool
 	verifyJSON       bool // Deprecated: use --format=json
@@ -69,6 +83,7 @@ var (
 var repoVerifyCmd = &cobra.Command{
 	Use:               "verify [pattern]",
 	Short:             "Check repository metadata and package integrity",
+	SilenceUsage:      true,
 	ValidArgsFunction: completeVerifyPatterns,
 	Long: `Check for consistency issues between resources and metadata, and validate package references.
 
@@ -92,8 +107,18 @@ Output Formats:
   --format=yaml:  Structured YAML for configuration
 
 Exit status:
-  0 - No errors found
-  1 - Errors found (orphaned metadata, type mismatches, or broken package references)
+  0 - Verification completed cleanly
+  1 - Verification completed with findings
+  2 - Verification failed operationally (e.g. lock contention/timeout, I/O, parse, internal)
+
+Status model (JSON/YAML):
+  - status=clean: verification completed with no findings
+  - status=completed_with_findings: verification completed and found issues/warnings
+  - status=execution_failed: verification could not complete (error.category explains why)
+
+Compatibility note:
+  - has_errors and has_warnings remain for compatibility and only reflect completed verification results.
+  - For status=execution_failed, has_errors/has_warnings are false and callers should use status + error.category.
 
 Examples:
   aimgr repo verify                  # Check all resources
@@ -107,7 +132,7 @@ Examples:
 		// Create a new repo manager
 		manager, err := NewManagerWithLogLevel()
 		if err != nil {
-			return err
+			return newOperationalFailureError(err)
 		}
 
 		// Determine output format (handle both --json and --format for backward compatibility)
@@ -119,29 +144,74 @@ Examples:
 		// Validate format
 		parsedFormat, err := output.ParseFormat(outputFormat)
 		if err != nil {
-			return err
+			return newOperationalFailureError(err)
 		}
 
 		repoPath := manager.GetRepoPath()
 
 		// Check if repository exists
 		if _, err := os.Stat(repoPath); os.IsNotExist(err) {
-			result := VerifyResult{HasErrors: false, HasWarnings: false}
+			result := VerifyResult{Status: verifyStatusClean, HasErrors: false, HasWarnings: false}
 			return outputVerifyResults(&result, parsedFormat, verifyFix)
 		}
 
-		// Print deprecation warning if --fix is used
 		if verifyFix {
-			repoLock, lockErr := manager.AcquireRepoLock(cmd.Context())
+			repoLock, lockErr := manager.AcquireRepoWriteLock(cmd.Context())
 			if lockErr != nil {
-				return fmt.Errorf("failed to acquire repository lock at %s: %w", manager.RepoLockPath(), lockErr)
+				if err := outputVerifyOperationalFailure(parsedFormat, lockErr); err != nil {
+					return err
+				}
+				if parsedFormat == output.JSON || parsedFormat == output.YAML {
+					return newSuppressedOperationalFailureErrorWithCategory(
+						fmt.Errorf("failed to acquire repository lock at %s: %w", manager.RepoLockPath(), lockErr),
+						commandErrorCategoryRepoBusy,
+					)
+				}
+				return wrapLockAcquireError(manager.RepoLockPath(), lockErr)
 			}
 			defer func() {
 				_ = repoLock.Unlock()
 			}()
 
+			if err := maybeHoldAfterRepoLock(cmd.Context(), "verify-fix"); err != nil {
+				if outErr := outputVerifyOperationalFailure(parsedFormat, err); outErr != nil {
+					return outErr
+				}
+				if parsedFormat == output.JSON || parsedFormat == output.YAML {
+					return newSuppressedOperationalFailureError(err)
+				}
+				return newOperationalFailureError(err)
+			}
+
 			// TODO: Remove --fix flag in a future version. Replaced by 'aimgr repo repair'.
 			fmt.Fprintln(os.Stderr, "Warning: --fix is deprecated. Use 'aimgr repo repair' instead.")
+		} else {
+			repoLock, lockErr := manager.AcquireRepoReadLock(cmd.Context())
+			if lockErr != nil {
+				if err := outputVerifyOperationalFailure(parsedFormat, lockErr); err != nil {
+					return err
+				}
+				if parsedFormat == output.JSON || parsedFormat == output.YAML {
+					return newSuppressedOperationalFailureErrorWithCategory(
+						fmt.Errorf("failed to acquire repository read lock at %s: %w", manager.RepoLockPath(), lockErr),
+						commandErrorCategoryRepoBusy,
+					)
+				}
+				return wrapReadLockAcquireError(manager.RepoLockPath(), lockErr)
+			}
+			defer func() {
+				_ = repoLock.Unlock()
+			}()
+
+			if err := maybeHoldAfterRepoLock(cmd.Context(), "verify-read"); err != nil {
+				if outErr := outputVerifyOperationalFailure(parsedFormat, err); outErr != nil {
+					return outErr
+				}
+				if parsedFormat == output.JSON || parsedFormat == output.YAML {
+					return newSuppressedOperationalFailureError(err)
+				}
+				return newOperationalFailureError(err)
+			}
 		}
 
 		// Parse pattern if provided
@@ -149,28 +219,73 @@ Examples:
 		if len(args) > 0 {
 			matcher, err = pattern.NewMatcher(args[0])
 			if err != nil {
-				return fmt.Errorf("invalid pattern '%s': %w", args[0], err)
+				if outErr := outputVerifyOperationalFailure(parsedFormat, err); outErr != nil {
+					return outErr
+				}
+				if parsedFormat == output.JSON || parsedFormat == output.YAML {
+					return newSuppressedOperationalFailureError(fmt.Errorf("invalid pattern '%s': %w", args[0], err))
+				}
+				return newOperationalFailureError(fmt.Errorf("invalid pattern '%s': %w", args[0], err))
 			}
 		}
 
 		// Run verification
 		result, err := verifyRepository(manager, verifyFix, matcher)
 		if err != nil {
-			return fmt.Errorf("verification failed: %w", err)
+			if outErr := outputVerifyOperationalFailure(parsedFormat, err); outErr != nil {
+				return outErr
+			}
+			if parsedFormat == output.JSON || parsedFormat == output.YAML {
+				return newSuppressedOperationalFailureError(fmt.Errorf("verification failed: %w", err))
+			}
+			return newOperationalFailureError(fmt.Errorf("verification failed: %w", err))
 		}
+
+		setVerifyStatusForCompletedResult(result)
 
 		// Output results in requested format
 		if err := outputVerifyResults(result, parsedFormat, verifyFix); err != nil {
-			return err
+			return newOperationalFailureError(err)
 		}
 
-		// Exit with non-zero status if errors found
-		if result.HasErrors {
-			os.Exit(1)
+		if result.Status == verifyStatusCompletedWithFindings {
+			return newCompletedWithFindingsError("repository verification completed with findings")
 		}
 
 		return nil
 	},
+}
+
+func setVerifyStatusForCompletedResult(result *VerifyResult) {
+	if result == nil {
+		return
+	}
+
+	result.Error = nil
+	if result.HasErrors || result.HasWarnings {
+		result.Status = verifyStatusCompletedWithFindings
+		return
+	}
+
+	result.Status = verifyStatusClean
+}
+
+func outputVerifyOperationalFailure(format output.Format, err error) error {
+	if format != output.JSON && format != output.YAML {
+		return nil
+	}
+
+	result := &VerifyResult{
+		Status:      verifyStatusExecutionFailed,
+		HasErrors:   false,
+		HasWarnings: false,
+		Error: &CommandFailure{
+			Category: string(classifyOperationalError(err)),
+			Message:  err.Error(),
+		},
+	}
+
+	return outputVerifyResults(result, format, false)
 }
 
 // verifyRepository performs repository verification checks
@@ -568,10 +683,8 @@ func displayVerifyResults(result *VerifyResult, fixed bool) {
 	if !hasIssues {
 		fmt.Println("✓ No issues found. Repository is healthy!")
 	} else {
-		if result.HasErrors {
-			fmt.Println("Status: ERRORS found (exit code 1)")
-		} else if result.HasWarnings {
-			fmt.Println("Status: Warnings only (exit code 0)")
+		if result.HasErrors || result.HasWarnings {
+			fmt.Println("Status: Findings detected (exit code 1)")
 		}
 
 		if !fixed && (len(result.ResourcesWithoutMetadata) > 0 || len(result.OrphanedMetadata) > 0) {

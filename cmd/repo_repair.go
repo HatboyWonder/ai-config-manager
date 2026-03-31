@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 
@@ -12,6 +13,8 @@ import (
 
 // RepoRepairResult contains the results of a repository repair operation
 type RepoRepairResult struct {
+	Status string          `json:"status" yaml:"status"`
+	Error  *CommandFailure `json:"error,omitempty" yaml:"error,omitempty"`
 	// Fixed issues
 	MetadataCreated []ResourceIssue `json:"metadata_created,omitempty" yaml:"metadata_created,omitempty"`
 	OrphanedRemoved []MetadataIssue `json:"orphaned_removed,omitempty" yaml:"orphaned_removed,omitempty"`
@@ -25,6 +28,12 @@ type RepoRepairResult struct {
 	UnfixableCount int `json:"unfixable_count" yaml:"unfixable_count"`
 }
 
+const (
+	repoRepairStatusClean                 = "clean"
+	repoRepairStatusCompletedWithFindings = "completed_with_findings"
+	repoRepairStatusExecutionFailed       = "execution_failed"
+)
+
 var (
 	repoRepairFormatFlag string
 	repoRepairDryRun     bool
@@ -32,8 +41,9 @@ var (
 
 // repoRepairCmd represents the repo repair command
 var repoRepairCmd = &cobra.Command{
-	Use:   "repair",
-	Short: "Repair repository metadata issues",
+	Use:          "repair",
+	Short:        "Repair repository metadata issues",
+	SilenceUsage: true,
 	Long: `Diagnose and fix repository metadata issues.
 
 This command performs the same checks as 'repo verify' and automatically fixes
@@ -53,25 +63,21 @@ Output Formats:
   --format=text (default): Human-readable summary
   --format=json:           Structured JSON output
 
+Exit status:
+  0 - Repair completed cleanly (or only fixable issues were resolved)
+  1 - Repair completed but unfixable issues remain
+  2 - Repair failed operationally (e.g. lock contention/timeout, I/O, parse, internal)
+
+Status model (JSON):
+  - status=clean: repair completed with no remaining issues
+  - status=completed_with_findings: repair completed but unfixable findings remain
+  - status=execution_failed: repair could not complete (error.category explains why)
+
 Examples:
   aimgr repo repair              # Fix all auto-fixable issues
   aimgr repo repair --dry-run    # Preview what would be fixed
   aimgr repo repair --format=json`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		// Create a new repo manager
-		manager, err := NewManagerWithLogLevel()
-		if err != nil {
-			return err
-		}
-
-		repoLock, err := manager.AcquireRepoLock(cmd.Context())
-		if err != nil {
-			return fmt.Errorf("failed to acquire repository lock at %s: %w", manager.RepoLockPath(), err)
-		}
-		defer func() {
-			_ = repoLock.Unlock()
-		}()
-
 		// Validate format — for repo repair we support text and json only
 		var parsedFormat output.Format
 		switch repoRepairFormatFlag {
@@ -80,21 +86,66 @@ Examples:
 		case "json":
 			parsedFormat = output.JSON
 		default:
-			return fmt.Errorf("invalid format: %s (valid: text, json)", repoRepairFormatFlag)
+			return newOperationalFailureError(fmt.Errorf("invalid format: %s (valid: text, json)", repoRepairFormatFlag))
+		}
+
+		// Create a new repo manager
+		manager, err := NewManagerWithLogLevel()
+		if err != nil {
+			if outErr := outputRepoRepairOperationalFailure(parsedFormat, err); outErr != nil {
+				return outErr
+			}
+			if parsedFormat == output.JSON {
+				return newSuppressedOperationalFailureError(err)
+			}
+			return newOperationalFailureError(err)
+		}
+
+		repoLock, err := manager.AcquireRepoWriteLock(cmd.Context())
+		if err != nil {
+			if outErr := outputRepoRepairOperationalFailure(parsedFormat, err); outErr != nil {
+				return outErr
+			}
+			if parsedFormat == output.JSON {
+				return newSuppressedOperationalFailureErrorWithCategory(
+					fmt.Errorf("failed to acquire repository lock at %s: %w", manager.RepoLockPath(), err),
+					commandErrorCategoryRepoBusy,
+				)
+			}
+			return wrapLockAcquireError(manager.RepoLockPath(), err)
+		}
+		defer func() {
+			_ = repoLock.Unlock()
+		}()
+
+		if err := maybeHoldAfterRepoLock(cmd.Context(), "repair"); err != nil {
+			if outErr := outputRepoRepairOperationalFailure(parsedFormat, err); outErr != nil {
+				return outErr
+			}
+			if parsedFormat == output.JSON {
+				return newSuppressedOperationalFailureError(err)
+			}
+			return newOperationalFailureError(err)
 		}
 
 		repoPath := manager.GetRepoPath()
 
 		// If the repository doesn't exist yet, there's nothing to repair
 		if _, err := os.Stat(repoPath); os.IsNotExist(err) {
-			result := &RepoRepairResult{DryRun: repoRepairDryRun}
+			result := &RepoRepairResult{DryRun: repoRepairDryRun, Status: repoRepairStatusClean}
 			return outputRepoRepairResults(result, parsedFormat)
 		}
 
 		// Run diagnostic scan without applying fixes
 		verifyResult, err := verifyRepository(manager, false, nil)
 		if err != nil {
-			return fmt.Errorf("diagnostic scan failed: %w", err)
+			if outErr := outputRepoRepairOperationalFailure(parsedFormat, err); outErr != nil {
+				return outErr
+			}
+			if parsedFormat == output.JSON {
+				return newSuppressedOperationalFailureError(fmt.Errorf("diagnostic scan failed: %w", err))
+			}
+			return newOperationalFailureError(fmt.Errorf("diagnostic scan failed: %w", err))
 		}
 
 		result := &RepoRepairResult{
@@ -109,14 +160,27 @@ Examples:
 			result.MetadataCreated = verifyResult.ResourcesWithoutMetadata
 			result.OrphanedRemoved = verifyResult.OrphanedMetadata
 			result.FixedCount = len(result.MetadataCreated) + len(result.OrphanedRemoved)
-			return outputRepoRepairResults(result, parsedFormat)
+			setRepoRepairStatusForCompletedResult(result)
+			if err := outputRepoRepairResults(result, parsedFormat); err != nil {
+				return err
+			}
+			if result.Status == repoRepairStatusCompletedWithFindings {
+				return completedWithFindingsErrorForFormat(parsedFormat, "repository repair completed with unfixable findings")
+			}
+			return nil
 		}
 
 		// Apply fixes: create missing metadata
 		for _, issue := range verifyResult.ResourcesWithoutMetadata {
 			res := resource.Resource{Name: issue.Name, Type: issue.Type}
 			if err := createMetadataForResource(manager, res); err != nil {
-				return fmt.Errorf("failed to create metadata for %s/%s: %w", issue.Type, issue.Name, err)
+				if outErr := outputRepoRepairOperationalFailure(parsedFormat, err); outErr != nil {
+					return outErr
+				}
+				if parsedFormat == output.JSON {
+					return newSuppressedOperationalFailureError(fmt.Errorf("failed to create metadata for %s/%s: %w", issue.Type, issue.Name, err))
+				}
+				return newOperationalFailureError(fmt.Errorf("failed to create metadata for %s/%s: %w", issue.Type, issue.Name, err))
 			}
 			result.MetadataCreated = append(result.MetadataCreated, issue)
 		}
@@ -124,15 +188,70 @@ Examples:
 		// Apply fixes: remove orphaned metadata
 		for _, issue := range verifyResult.OrphanedMetadata {
 			if err := os.Remove(issue.Path); err != nil {
-				return fmt.Errorf("failed to remove orphaned metadata %s: %w", issue.Path, err)
+				if outErr := outputRepoRepairOperationalFailure(parsedFormat, err); outErr != nil {
+					return outErr
+				}
+				if parsedFormat == output.JSON {
+					return newSuppressedOperationalFailureError(fmt.Errorf("failed to remove orphaned metadata %s: %w", issue.Path, err))
+				}
+				return newOperationalFailureError(fmt.Errorf("failed to remove orphaned metadata %s: %w", issue.Path, err))
 			}
 			result.OrphanedRemoved = append(result.OrphanedRemoved, issue)
 		}
 
 		result.FixedCount = len(result.MetadataCreated) + len(result.OrphanedRemoved)
+		setRepoRepairStatusForCompletedResult(result)
+		if err := outputRepoRepairResults(result, parsedFormat); err != nil {
+			return err
+		}
+		if result.Status == repoRepairStatusCompletedWithFindings {
+			return completedWithFindingsErrorForFormat(parsedFormat, "repository repair completed with unfixable findings")
+		}
 
-		return outputRepoRepairResults(result, parsedFormat)
+		return nil
 	},
+}
+
+func setRepoRepairStatusForCompletedResult(result *RepoRepairResult) {
+	if result == nil {
+		return
+	}
+
+	result.Error = nil
+	if result.UnfixableCount > 0 {
+		result.Status = repoRepairStatusCompletedWithFindings
+		return
+	}
+
+	result.Status = repoRepairStatusClean
+}
+
+func outputRepoRepairOperationalFailure(format output.Format, err error) error {
+	if format != output.JSON {
+		return nil
+	}
+
+	result := &RepoRepairResult{
+		Status: repoRepairStatusExecutionFailed,
+		Error: &CommandFailure{
+			Category: string(classifyOperationalError(err)),
+			Message:  err.Error(),
+		},
+	}
+
+	return outputRepoRepairResults(result, format)
+}
+
+func completedWithFindingsErrorForFormat(format output.Format, message string) error {
+	if format == output.JSON {
+		return &commandExitError{
+			ExitCode:       commandExitCodeCompletedWithFindings,
+			SuppressStderr: true,
+			Cause:          errors.New(message),
+		}
+	}
+
+	return newCompletedWithFindingsError(message)
 }
 
 // outputRepoRepairResults outputs the repair results in the requested format

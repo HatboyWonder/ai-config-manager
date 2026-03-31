@@ -1,13 +1,16 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/dynatrace-oss/ai-config-manager/v3/pkg/metadata"
+	"github.com/dynatrace-oss/ai-config-manager/v3/pkg/output"
 	"github.com/dynatrace-oss/ai-config-manager/v3/pkg/repo"
 	"github.com/dynatrace-oss/ai-config-manager/v3/pkg/resource"
 )
@@ -461,6 +464,7 @@ func TestRepoRepair_MixedIssues(t *testing.T) {
 
 func TestRepoRepair_OutputJSON(t *testing.T) {
 	result := &RepoRepairResult{
+		Status: repoRepairStatusClean,
 		MetadataCreated: []ResourceIssue{
 			{Name: "test-cmd", Type: resource.Command, Path: "/repo/commands/test-cmd.md"},
 		},
@@ -492,5 +496,118 @@ func TestRepoRepair_OutputJSON(t *testing.T) {
 	}
 	if decoded.MetadataCreated[0].Name != "test-cmd" {
 		t.Errorf("MetadataCreated[0].Name = %q, want %q", decoded.MetadataCreated[0].Name, "test-cmd")
+	}
+}
+
+func TestSetRepoRepairStatusForCompletedResult(t *testing.T) {
+	t.Run("clean result", func(t *testing.T) {
+		result := &RepoRepairResult{UnfixableCount: 0}
+		setRepoRepairStatusForCompletedResult(result)
+		if result.Status != repoRepairStatusClean {
+			t.Fatalf("status=%q want %q", result.Status, repoRepairStatusClean)
+		}
+	})
+
+	t.Run("unfixable findings", func(t *testing.T) {
+		result := &RepoRepairResult{UnfixableCount: 2}
+		setRepoRepairStatusForCompletedResult(result)
+		if result.Status != repoRepairStatusCompletedWithFindings {
+			t.Fatalf("status=%q want %q", result.Status, repoRepairStatusCompletedWithFindings)
+		}
+	})
+}
+
+func TestOutputRepoRepairOperationalFailure(t *testing.T) {
+	oldStdout := os.Stdout
+	r, w, pipeErr := os.Pipe()
+	if pipeErr != nil {
+		t.Fatalf("pipe: %v", pipeErr)
+	}
+	os.Stdout = w
+
+	err := outputRepoRepairOperationalFailure(output.JSON, os.ErrNotExist)
+	_ = w.Close()
+	os.Stdout = oldStdout
+	if err != nil {
+		t.Fatalf("outputRepoRepairOperationalFailure returned error: %v", err)
+	}
+
+	buf := make([]byte, 4096)
+	n, _ := r.Read(buf)
+	raw := string(buf[:n])
+
+	var parsed RepoRepairResult
+	if unmarshalErr := json.Unmarshal([]byte(raw), &parsed); unmarshalErr != nil {
+		t.Fatalf("unmarshal output: %v; output=%s", unmarshalErr, raw)
+	}
+
+	if parsed.Status != repoRepairStatusExecutionFailed {
+		t.Fatalf("status=%q want %q", parsed.Status, repoRepairStatusExecutionFailed)
+	}
+	if parsed.Error == nil {
+		t.Fatalf("expected error payload")
+	}
+	if parsed.Error.Category != string(commandErrorCategoryInternal) && parsed.Error.Category != string(commandErrorCategoryIOError) {
+		t.Fatalf("unexpected category=%q", parsed.Error.Category)
+	}
+}
+
+func TestRepoRepairLockContentionReturnsTypedExitError(t *testing.T) {
+	repoDir := t.TempDir()
+	t.Setenv("AIMGR_REPO_PATH", repoDir)
+
+	manager := repo.NewManagerWithPath(repoDir)
+	lock, err := manager.AcquireRepoWriteLock(context.Background())
+	if err != nil {
+		t.Fatalf("acquire setup lock: %v", err)
+	}
+	defer func() { _ = lock.Unlock() }()
+
+	oldFormat := repoRepairFormatFlag
+	repoRepairFormatFlag = "json"
+	defer func() {
+		repoRepairFormatFlag = oldFormat
+	}()
+
+	err = repoRepairCmd.RunE(repoRepairCmd, nil)
+	if err == nil {
+		t.Fatalf("expected error")
+	}
+
+	var cmdErr *commandExitError
+	if !errors.As(err, &cmdErr) {
+		t.Fatalf("expected commandExitError, got %T", err)
+	}
+	if cmdErr.ExitCode != commandExitCodeOperationalFailure {
+		t.Fatalf("exit code=%d want %d", cmdErr.ExitCode, commandExitCodeOperationalFailure)
+	}
+	if cmdErr.Category != commandErrorCategoryRepoBusy {
+		t.Fatalf("category=%q want %q", cmdErr.Category, commandErrorCategoryRepoBusy)
+	}
+}
+
+func TestRepoRepairUnfixableReturnsCompletedWithFindingsExit(t *testing.T) {
+	manager, cleanup := setupRepairTestRepo(t)
+	defer cleanup()
+
+	repoPath := manager.GetRepoPath()
+	createTestCommand(t, repoPath, "mismatch-exit")
+	createTypeMismatchMetadata(t, repoPath, "mismatch-exit", resource.Command, resource.Skill)
+
+	oldFormat := repoRepairFormatFlag
+	repoRepairFormatFlag = "json"
+	defer func() { repoRepairFormatFlag = oldFormat }()
+
+	err := repoRepairCmd.RunE(repoRepairCmd, nil)
+	if err == nil {
+		t.Fatalf("expected completed-with-findings error")
+	}
+
+	var cmdErr *commandExitError
+	if !errors.As(err, &cmdErr) {
+		t.Fatalf("expected commandExitError, got %T", err)
+	}
+	if cmdErr.ExitCode != commandExitCodeCompletedWithFindings {
+		t.Fatalf("exit code=%d want %d", cmdErr.ExitCode, commandExitCodeCompletedWithFindings)
 	}
 }
