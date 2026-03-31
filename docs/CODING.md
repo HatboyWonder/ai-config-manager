@@ -60,7 +60,7 @@ Rules:
 Scope / limitations:
 
 - These locks are implemented with `flock` on Unix/POSIX builds.
-- Windows lock implementation is currently not available in this release.
+- On Windows, locks use `LockFileEx`/`UnlockFileEx` from the Windows API.
 - Locks serialize *aimgr* mutation paths; they do not prevent arbitrary external tools from modifying files directly.
 
 ## Atomic Write Model (Repo-Managed State Files)
