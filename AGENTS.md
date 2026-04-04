@@ -4,10 +4,14 @@ CLI tool (Go 1.25.6) for managing AI resources (commands, skills, agents, packag
 
 **Tech Stack**: Go 1.25.6, Cobra, Viper, XDG directories, GoReleaser
 
+## Overview
+
+Read `docs/OVERVIEW.md` for repository architecture, package ownership, and the high-level repo map before open-ended research or unfamiliar-code work.
+
 ## Coding
 
-Read `docs/CODING.md` for build commands, project structure, code conventions, and safety rules.
-Read `CONTRIBUTING.md` for contribution workflow and commit conventions.
+Read `docs/CODING.md` for build commands, implementation constraints, code conventions, and safety rules.
+Read `CONTRIBUTING.md` for contribution workflow and [commit message format](CONTRIBUTING.md#commit-message-format).
 
 ## Testing
 
@@ -34,22 +38,7 @@ Read `.beads/README.md` for tracker basics.
 
 ## Landing the Plane (Session Completion)
 
-**When ending a work session**, complete ALL steps:
-
-1. **File issues for remaining work** -- Create issues for anything that needs follow-up
-2. **Run quality gates** (if code changed) -- Tests, linters, builds
-3. **Update issue status** -- Close finished work, update in-progress items
-4. **PUSH TO REMOTE** -- This is MANDATORY:
-   ```bash
-   git pull --rebase
-   git push
-   git status  # MUST show "up to date with origin"
-   ```
-5. **Clean up** -- Clear stashes, prune remote branches
-6. **Verify** -- All changes committed AND pushed
-7. **Hand off** -- Provide context for next session
-
-**CRITICAL**: Work is NOT complete until `git push` succeeds.
+Follow the beads session-completion workflow below. Work is not done until `bd dolt push`, `git push`, and `git status` confirm the branch is up to date.
 
 <!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:ca08a54f -->
 ## Beads Issue Tracker

@@ -1,6 +1,16 @@
 # Coding Guide
 
-Essential coding reference for ai-config-manager contributors.
+## Build, install, and static checks
+
+| Goal | Command | Notes |
+| --- | --- | --- |
+| Build the local binary | `make build` | Writes `./aimgr` |
+| Show install target for this OS | `make os-info` | Use before `make install` if the install path matters |
+| Install the binary | `make install` | Installs to the OS-specific path reported by `make os-info` |
+| Format Go code | `make fmt` | Run before commit |
+| Run static analysis | `make vet` | Baseline local static-analysis check; CI also runs `golangci-lint` from `.github/workflows/build.yml` |
+
+For test selection and session-close validation, use `docs/TESTING.md`.
 
 ## CRITICAL: Repository Safety for Testing
 
@@ -13,7 +23,7 @@ The default repository location is `~/.local/share/ai-config/repo/` which contai
 | Method | Usage |
 |--------|-------|
 | Environment variable (recommended) | `export AIMGR_REPO_PATH=/tmp/test-repo-$(date +%s)` |
-| Config file | `aimgr --config /tmp/test-config.yaml repo init` |
+| Config file | `printf 'repo:\n  path: /tmp/test-repo\n' > /tmp/test-config.yaml && ./aimgr --config /tmp/test-config.yaml repo init` |
 | Go tests | `repo.NewManagerWithPath(t.TempDir())` |
 
 **Bottom line**: Every test operation MUST explicitly specify a temporary repository location. No exceptions.
@@ -32,6 +42,17 @@ Version managers (mise, asdf, etc.) may install older versions that are found fi
 # WRONG: May use mise/asdf version
 aimgr --version
 ```
+
+## Common change map
+
+| If you are changing... | Start with... |
+| --- | --- |
+| CLI flags, command UX, or exit behavior | `cmd/` and matching `cmd/*_test.go` files |
+| Repo add/sync/remove/repair behavior | `pkg/repo/`, `pkg/repomanifest/`, `pkg/sourcemetadata/`, `cmd/repo_*.go` |
+| Install or uninstall behavior | `pkg/install/`, `pkg/tools/`, `cmd/install.go`, `cmd/uninstall.go` |
+| Resource parsing or validation | `pkg/resource/`, `cmd/resource_validate.go`, `test/resource_validate_test.go` |
+| Workspace cache or Git interactions | `pkg/workspace/`, `pkg/source/`, `test/workspace_*`, `test/git_*` |
+| Output formatting or machine-readable output | `pkg/output/`, `cmd/list*.go`, `cmd/repo_*` |
 
 ## Concurrency and Locking Model (Repo/Workspace Mutations)
 
@@ -87,7 +108,7 @@ Use this matrix when adding or changing commands that touch shared repo state.
 | `aimgr repo drop` | write | Deletes repository data. |
 | `aimgr repo apply-manifest` | write | Applies source mutations from manifest. |
 | `aimgr repo override-source` | write | Mutates source overrides/metadata. |
-| `aimgr repo prune` | write | Deletes stale resources/metadata. |
+| `aimgr repo prune` | write | Deletes unreferenced `.workspace/` Git caches. |
 | `aimgr repo repair` | write | Rewrites repo metadata/content for consistency. |
 | `aimgr repo verify --fix` | write | Applies corrective repo mutations. |
 | `aimgr repo verify` (read-only) | read | Scans shared repo files/metadata without mutation. |
@@ -137,45 +158,3 @@ Important limits:
   still provide serialization for mutation paths.
 - Parent-directory `fsync` is best-effort by platform; on Windows this layer
   currently does not perform directory `fsync`.
-
-## Quick Commands
-
-```bash
-# Build
-make build      # Build binary to ./aimgr
-make install    # Build and install to ~/bin
-
-# Test
-make test             # All tests (vet -> unit [cmd+pkg] -> integration)
-make unit-test        # Fast unit tests only
-make integration-test # Integration tests
-
-# Code Quality
-make fmt        # Format all Go code
-make vet        # Run go vet
-```
-
-## Project Structure
-
-```
-cmd/    CLI command implementations (Cobra)
-pkg/    Business logic (20 packages)
-test/   Integration and E2E tests
-docs/   Documentation
-```
-
-**Architecture**: CLI (Cobra) -> Business Logic (`pkg/`) -> Storage (XDG directories)
-
-## Detailed Guides
-
-- **[Code Style](contributor-guide/code-style.md)** -- Naming, imports, error handling, symlink handling, best practices
-- **[Architecture](contributor-guide/architecture.md)** -- System overview, package responsibilities, 5 critical rules, data flows
-- **[Development Environment](contributor-guide/development-environment.md)** -- IDE setup, mise, build tools
-
-## Before Committing
-
-1. `make fmt` -- Format code
-2. `make test` -- All tests pass
-3. Follow [code style guide](contributor-guide/code-style.md)
-4. Git operations use `pkg/workspace` (see [architecture](contributor-guide/architecture.md))
-5. Tests use `t.TempDir()` and `NewManagerWithPath()` (see [testing](contributor-guide/testing.md))

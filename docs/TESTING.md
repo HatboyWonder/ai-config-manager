@@ -1,22 +1,35 @@
 # Testing Guide
 
-Quick reference for testing ai-config-manager.
+## Command map
 
-## Commands
+| Goal | Command | What it covers |
+| --- | --- | --- |
+| Baseline contributor checks | `make test` | `make vet` + `make unit-test` + `make integration-test` |
+| Fast local regression | `make unit-test` | `go test -v -short ./cmd/...` and `./pkg/...` |
+| Integration coverage | `make integration-test` | `go test -tags=integration ./pkg/...` plus `go test ./test/...` |
+| Full CLI end-to-end coverage | `make e2e-test` | `go test -tags=e2e ./test/e2e/` |
+| Main CI test-job parity | `go test -race ./...` | Mirrors the non-E2E `Run tests` step in `.github/workflows/build.yml` |
 
-```bash
-make test             # All tests (vet -> unit [cmd+pkg] -> integration)
-make unit-test        # Fast unit tests for ./cmd/... and ./pkg/...
-make integration-test # Network-dependent tests (~30s)
-make e2e-test         # Full CLI tests (~1-2min)
-```
+## Minimum checks by change type
+
+- Docs-only edits under `docs/`, `README.md`, or `AGENTS.md`: verify affected links, paths, and commands; no Go test run is required unless the documented behavior changed in the same change.
+- Changes in `cmd/` or `pkg/` with no user-facing workflow impact: run `make test`.
+- Changes to install flows, project layout handling, script entrypoints, or supported-tool behavior: run `make test` and `make e2e-test`.
+- Changes to repo locking, workspace caching, Git sync/import, or filesystem mutation safety: run `make integration-test` at minimum, and prefer `make test` for session close.
 
 ## Critical Rules
 
 - **ALWAYS** use `t.TempDir()` for temporary directories
 - **ALWAYS** use `repo.NewManagerWithPath(tmpDir)` in tests -- NEVER `NewManager()`
 - **NEVER** write to `~/.local/share/ai-config/` in tests
-- **ALWAYS** run `make integration-test` before finishing larger work such as a bigger feature, an epic, or broad cross-cutting changes. Focused tests are not enough for session close in those cases.
+- **ALWAYS** run `make integration-test` before finishing larger work such as a bigger feature, an epic, or broad cross-cutting changes if you were relying on focused tests during development.
+- **ALWAYS** add `make e2e-test` when a change affects CLI entrypoints, installation flows, or user-visible end-to-end behavior.
+
+## Test locations
+
+- `cmd/*_test.go` and `pkg/**/*_test.go` — fast local coverage run by `make unit-test`
+- `pkg/**/*_test.go` with `//go:build integration` plus files under `test/` — integration coverage run by `make integration-test`
+- `test/e2e/*` with `//go:build e2e` — full binary coverage run by `make e2e-test`
 
 ## Concurrency Test Expectations
 
@@ -60,4 +73,4 @@ behavior focuses on atomic replacement semantics.
 
 ## Full Guide
 
-Read **[docs/contributor-guide/testing.md](contributor-guide/testing.md)** for test types, isolation patterns, table-driven tests, and troubleshooting.
+Read **[docs/contributor-guide/testing.md](contributor-guide/testing.md)** for test-authoring patterns, example structures, and troubleshooting.

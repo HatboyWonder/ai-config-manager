@@ -1,19 +1,18 @@
 # Pull Request Guide
 
-Short reference for branch workflow, pull request expectations, and review follow-up in the `aimgr` repository.
-
-## Branch Workflow
+## Branch setup
 
 - Start from an up-to-date `main` branch.
-- Create a descriptive feature branch such as `feature/your-feature-name`.
+- Create a focused branch such as `feature/your-feature-name`, `fix/your-bug-name`, or `docs/your-doc-change`.
 - Keep each branch focused on one logical change.
 - Push your branch to your fork or remote before opening a PR.
 
-## Before Opening a PR
+## Required local checks before opening a PR
 
 - Run `make fmt` to format Go code.
 - Run `make vet` for static analysis.
-- Run `make test` to cover the normal contributor test flow.
+- Run `make test` for the baseline contributor test flow.
+- Add `make e2e-test` when the change affects CLI entrypoints, installation flows, scripts, or other end-to-end user workflows.
 - Update documentation when the change affects users, contributors, or AI agents.
 
 ## PR Description
@@ -28,7 +27,7 @@ Link related issues with GitHub keywords such as `Fixes #42` when applicable.
 
 ## Review Follow-up
 
-- Wait for CI to pass before asking for merge.
+- Wait for the checks in `.github/workflows/build.yml` to pass before asking for merge.
 - Address review feedback promptly and respectfully.
 - Maintainers merge after approval.
 

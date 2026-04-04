@@ -29,7 +29,7 @@ For detailed setup, see [Development Environment](development-environment.md).
 
 - **[Architecture Guide](architecture.md)** - System overview, design rules, data flows
   - Architecture rules (Git workspace, XDG, error handling, symlinks)
-  - Package structure (17 packages)
+  - Package structure and responsibilities across `pkg/`
   - Key concepts and patterns
 
 ### Additional Resources
@@ -44,8 +44,10 @@ For detailed setup, see [Development Environment](development-environment.md).
 
 ```bash
 make build      # Build binary
-make install    # Install to ~/bin
-make test       # All tests (vet → unit → integration → e2e)
+make os-info    # Show OS-specific install path
+make install    # Install to the OS-specific path from make os-info
+make test       # Baseline contributor checks (vet → unit → integration)
+make e2e-test   # End-to-end CLI coverage when workflow changes warrant it
 ```
 
 ### Code Quality
@@ -65,7 +67,7 @@ import (
 
     "github.com/spf13/cobra"  // 2. External dependencies
 
-    "github.com/dynatrace-oss/ai-config-manager/pkg/resource"  // 3. Internal
+    "github.com/dynatrace-oss/ai-config-manager/v3/pkg/resource"  // 3. Internal
 )
 ```
 
@@ -74,7 +76,7 @@ import (
 - Files: `lowercase_with_underscores.go`
 - Types: `PascalCase`
 - Functions: `PascalCase` (exported), `camelCase` (unexported)
-- Resources: `lowercase-with-hyphens` (1-64 chars)
+- Resources: lowercase alphanumeric and hyphen segments, with optional `/` separators for nested names such as `api/deploy`
 
 ### Error Handling
 

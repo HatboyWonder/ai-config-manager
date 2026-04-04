@@ -1,6 +1,18 @@
-# Monitoring Configuration
+# Monitoring
 
-This project does not currently have a production monitoring backend wired into the repository. For now, monitoring is log-first and focuses on local tool/runtime health for `aimgr`, beads (`bd`), and OpenCode/opencode-coder.
+## Start here
+
+- Load the **observability-triage** skill for log analysis and issue triage.
+- This repository is log-first; it does not have a production metrics/dashboard backend wired into the repo.
+- Prioritize local health signals for `aimgr`, `bd`, and OpenCode/opencode-coder.
+
+## Fast evidence path
+
+1. `.beads/daemon-error` (if present)
+2. `.beads/daemon.log`
+3. `.beads/dolt-server.log`
+4. `~/.local/share/opencode/log/*.log`
+5. `logs/operations.log` (if aimgr file logging is enabled)
 
 ## Available Data
 
@@ -10,16 +22,16 @@ This project does not currently have a production monitoring backend wired into 
   - Beads daemon lifecycle, import/export activity, sync failures, and warnings.
 - `.beads/dolt-server.log`
   - Dolt SQL server startup, connections, and database-level errors used by beads.
-- `.beads/daemon-error`
-  - Last fatal daemon/bootstrap issue. Treat this as high-signal when present.
-- `logs/operations.log`
-  - Aimgr structured repo-operation log when aimgr logging is active.
+- `.beads/daemon-error` (optional)
+  - Last fatal daemon/bootstrap issue when the beads daemon records one. Treat it as high-signal when present.
+- `logs/operations.log` (runtime-created)
+  - Aimgr structured repo-operation log when aimgr file logging is active.
 - `debug.log`
   - Historical local debug output from related tooling in this workspace.
 - `~/.local/share/opencode/log/*.log`
   - OpenCode runtime logs, plugin startup, config warnings, and session errors.
 
-### Useful commands
+### Health commands
 
 - `./aimgr --version`
 - `bd version`
@@ -52,7 +64,7 @@ Use the local `./aimgr` binary for validation, not a globally installed `aimgr` 
 
 ## Context And Meaning
 
-- `.beads/daemon-error` is high priority because it can indicate tracker-state corruption risk.
+- `.beads/daemon-error` is high priority when present because it can indicate tracker-state corruption risk.
 - `!BADKEY` in slog-style logs usually means formatted logging is being used incorrectly and the resulting logs are less trustworthy for diagnosis.
 - `fatal: couldn't find remote ref main` in old daemon logs may be historical; confirm it still reproduces before treating it as an active bug.
 - Empty `logs/operations.log` is not automatically a bug; it may simply mean no aimgr operations were run with file logging enabled.
@@ -61,7 +73,7 @@ Use the local `./aimgr` binary for validation, not a globally installed `aimgr` 
 
 When asked to analyze monitoring data for this repo:
 
-1. Check `.beads/daemon-error`
+1. Check `.beads/daemon-error` when present
 2. Review `.beads/daemon.log` and `.beads/dolt-server.log`
 3. Review current OpenCode logs in `~/.local/share/opencode/log/`
 4. Run lightweight health commands (`bd version`, `bd doctor`, `./aimgr --version`)

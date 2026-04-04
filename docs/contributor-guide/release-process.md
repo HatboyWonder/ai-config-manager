@@ -1,6 +1,6 @@
 # Release Process
 
-This document provides step-by-step instructions for releasing ai-config-manager.
+Start with the **github-releases** skill. Use this file for the repo-local execution details that supplement that workflow.
 
 ## Build
 
@@ -25,9 +25,9 @@ This runs: `go vet`, unit tests, and integration tests. All must pass.
 The version in `pkg/version/version.go` is a placeholder. The actual version is injected at build time via ldflags by GoReleaser:
 
 ```
--X github.com/dynatrace-oss/ai-config-manager/pkg/version.Version={{.Version}}
--X github.com/dynatrace-oss/ai-config-manager/pkg/version.GitCommit={{.ShortCommit}}
--X github.com/dynatrace-oss/ai-config-manager/pkg/version.BuildDate={{.Date}}
+-X github.com/dynatrace-oss/ai-config-manager/v3/pkg/version.Version={{.Version}}
+-X github.com/dynatrace-oss/ai-config-manager/v3/pkg/version.GitCommit={{.ShortCommit}}
+-X github.com/dynatrace-oss/ai-config-manager/v3/pkg/version.BuildDate={{.Date}}
 ```
 
 **Do not manually update version files.**
@@ -43,7 +43,7 @@ Follow Semantic Versioning:
 Analyze commits to determine bump:
 
 ```bash
-git log v2.2.0..HEAD --pretty=format:"%s" | grep -E "^(feat(\([^)]+\))?:|fix(\([^)]+\))?:|BREAKING)"
+git log "$(git describe --tags --abbrev=0 2>/dev/null)"..HEAD --pretty=format:"%s" | grep -E "^(feat(\([^)]+\))?:|fix(\([^)]+\))?:|BREAKING)"
 ```
 
 Rules:
@@ -62,6 +62,11 @@ Rules:
 ## Release Steps
 
 This project uses **tag-triggered GitHub Actions**. Do NOT use `gh workflow run`.
+
+Workflow/config anchors:
+
+- `.github/workflows/release.yml`
+- `.goreleaser.yaml`
 
 ### 1. Update CHANGELOG.md
 
@@ -112,21 +117,7 @@ GitHub auto-generates basic notes. Enhance them:
 ```bash
 cat > /tmp/release-notes.md << 'NOTES'
 ## Highlights
-
-- **Feature** - Description
-- **Tests** - Improvements
-- **Config** - Changes
-
-## What's Changed
-
-### Added
-- Item (commit)
-
-### Fixed
-- Item (commit)
-
-### Changed
-- Item (commit)
+- Key feature or fix
 
 ## Full Changelog
 https://github.com/dynatrace-oss/ai-config-manager/compare/vOLD...vNEW

@@ -1,20 +1,27 @@
 # Release Process
 
-Quick reference for releasing ai-config-manager.
+## Start here
 
-## Overview
+- Load the **github-releases** skill before doing release work.
+- Use `docs/contributor-guide/release-process.md` for the detailed operator checklist after the skill confirms the version and execution path.
 
-Releases are **tag-triggered** via GitHub Actions + GoReleaser. Version is injected at build time -- do NOT manually update version files.
+## Repo-local release facts
 
-## Steps
+- Release automation lives in `.github/workflows/release.yml` and triggers on `git push` of tags matching `v*`.
+- Packaging and version injection live in `.goreleaser.yaml`.
+- Build-time version fields are injected into `github.com/dynatrace-oss/ai-config-manager/v3/pkg/version`.
+- `CHANGELOG.md` is the release-history file that must be updated before tagging.
+- Release work is destructive and externally visible; do not improvise from this file alone.
 
-1. Ensure tests pass: `make test`
-2. Update `CHANGELOG.md`
-3. Create and push a Git tag: `git tag -a vX.Y.Z -m "Release vX.Y.Z" && git push origin vX.Y.Z`
-4. Monitor: `gh run watch`
+## Required local checks before tagging
 
-## Full Guide
+- `make test`
+- `make build`
+- `git status --short --branch`
+- Confirm the intended release notes update in `CHANGELOG.md`
 
-Read **[docs/contributor-guide/release-process.md](contributor-guide/release-process.md)** for complete steps, versioning rules, and rollback procedures.
+## Operator references
 
-Load the **github-releases** skill for an automated release workflow.
+- `.github/workflows/release.yml` — tag-triggered publishing workflow
+- `.goreleaser.yaml` — archive, checksum, and ldflags configuration
+- `docs/contributor-guide/release-process.md` — detailed tagging, monitoring, and rollback steps

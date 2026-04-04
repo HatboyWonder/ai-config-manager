@@ -68,10 +68,11 @@ make test
 ```bash
 # Build & Install
 make build      # Build binary to ./aimgr
-make install    # Build and install to ~/bin
+make os-info    # Show the OS-specific install path
+make install    # Build and install to the path reported by make os-info
 
 # Testing
-make test              # All tests (vet → unit → integration → e2e)
+make test              # Baseline contributor checks (vet → unit → integration)
 make unit-test         # Fast unit tests only
 make integration-test  # Integration tests
 make e2e-test          # E2E tests
@@ -89,11 +90,12 @@ make help       # Show all targets
 
 ### Test Execution Order
 
-Tests run in this order (matching CI):
+Local baseline checks run in this order:
 1. **vet** - Static analysis (catches syntax errors)
 2. **unit-test** - Fast tests, no external dependencies
 3. **integration-test** - Slower tests, uses git/network
-4. **e2e-test** - Full CLI tests with real binary
+
+`make e2e-test` is a separate check. In CI, `.github/workflows/build.yml` also runs E2E coverage in its own job after the main test job.
 
 ### Building for Different Platforms
 
@@ -110,16 +112,19 @@ GOOS=windows GOARCH=amd64 make build
 
 ## CI/CD Consistency
 
-Setup ensures perfect consistency between local and CI:
+Local setup stays close to CI, but CI still adds a few extra validations:
 
 | Aspect | Local (mise) | CI (GitHub Actions) |
 |--------|--------------|---------------------|
 | Go Version | 1.25.6 | 1.25.6 |
 | CGO | Disabled (0) | Disabled (0) |
-| Test Order | vet → unit → int → e2e | vet → unit → int → e2e |
-| Linter | go vet | go vet |
+| Baseline Checks | `make test` | `make vet` + `go test -race ./...` |
+| E2E | `make e2e-test` when needed | Separate `e2e-test` job |
+| Linter | `make vet` | `make vet` + `golangci-lint` |
+| Script validation | optional local spot-checks | `bash -n scripts/install.sh` + PowerShell parse for `scripts/install.ps1` |
+| Build | `make build` | `make build` + multi-platform build job |
 
-**Result**: If tests pass locally, they'll pass in CI.
+**Result**: Passing local checks reduces CI risk, but CI still adds race-test, lint, script-validation, and build-matrix coverage.
 
 ## Troubleshooting
 
@@ -142,8 +147,9 @@ mise which go        # Verify Go managed by mise
 
 1. Ensure Go 1.25.6: `go version`
 2. Clean and rebuild: `make clean && make build`
-3. Run tests in CI order: `make test`
-4. Check for uncommitted changes: `git status`
+3. Run baseline local checks: `make test && make build`
+4. Add `make e2e-test` if the change affects end-to-end workflows
+5. Check for uncommitted changes: `git status`
 
 ## Without mise (Manual Setup)
 

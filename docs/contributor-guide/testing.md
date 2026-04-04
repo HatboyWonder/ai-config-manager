@@ -1,79 +1,45 @@
 # Testing Guide
 
-Comprehensive testing approach for ai-config-manager.
+Start with [docs/TESTING.md](../TESTING.md) for command selection, minimum checks, and repo-wide test rules. This file covers test-authoring patterns for contributors changing Go code.
 
-## Test Types
+## Where tests live
 
-**Unit Tests** (fast, fixtures-based):
-- Located in `pkg/*/` packages alongside source code
-- Use fixtures in `pkg/*/testdata/ (e.g., pkg/discovery/testdata/)`
-- No network calls, `//go:build unit`
-- Run with: `make unit-test`
-- Execution: <5 seconds
+- `cmd/*_test.go` and `pkg/**/*_test.go` hold most fast unit coverage run by `make unit-test`.
+- Integration coverage is split between `pkg/**/*_test.go` files tagged with `//go:build integration` and higher-level CLI/integration coverage under `test/`.
+- End-to-end coverage lives under `test/e2e/` and uses the `e2e` build tag.
+- Reusable fixtures usually live under package-local `testdata/` directories such as `pkg/discovery/testdata/`.
 
-**Integration Tests** (slower, network-dependent):
-- Located in `test/` directory
-- Tagged with `//go:build integration`
-- Use real GitHub repositories
-- Run with: `make integration-test`
-- Execution: ~30 seconds
-
-**E2E Tests** (slowest, full CLI testing):
-- Located in `test/e2e/`
-- Build actual binary and test commands
-- Tagged with `//go:build e2e`
-- Run with: `make e2e-test`
-- Execution: ~1-2 minutes
-
-## Running Tests
+## Useful commands while authoring tests
 
 ```bash
-# Run all tests (unit + integration + e2e + vet)
-make test
+# Fast package-level checks while editing
+go test -run TestLoad_ValidConfig -v ./pkg/config
+go test -run TestLoadCommand -v ./pkg/resource
 
-# Run only unit tests (fast)
+# Repo-standard suites
 make unit-test
-
-# Run only integration tests
 make integration-test
-
-# Run only E2E tests
 make e2e-test
-
-# Run specific test
-go test -v ./pkg/resource/command_test.go
-go test -v ./pkg/config -run TestLoad_ValidConfig
-
-# Run with coverage
-go test -v -cover ./pkg/...
 ```
 
-## Test Isolation
+## Core test-authoring rules
 
-**All tests use isolated temporary repositories** to prevent polluting the user's actual repository at `~/.local/share/ai-config/`.
+- Use `t.TempDir()` for temp data and repo state.
+- Use `repo.NewManagerWithPath(...)` instead of `NewManager()`.
+- Keep tests isolated from `~/.local/share/ai-config/`.
+- Prefer table-driven coverage for validation and parser logic.
+- Put network-dependent or slower checks in the repo's integration/e2e layers instead of the fast unit loop.
 
-### Test Setup Pattern
+## Basic isolation pattern
 
 ```go
 func TestSomething(t *testing.T) {
-    // Create isolated temporary directory (auto-cleanup)
     tmpDir := t.TempDir()
-    
-    // Create manager with custom path (NOT NewManager())
     manager := repo.NewManagerWithPath(tmpDir)
-    
-    // ... perform test operations ...
-    
-    // No cleanup needed - t.TempDir() auto-removes tmpDir
+
+    // ... perform test operations against manager ...
 }
 ```
-
-### Benefits
-
-1. **Automatic Cleanup**: `t.TempDir()` removes directories when tests complete
-2. **Parallel Safety**: Each test gets isolated directory
-3. **No User Impact**: Tests never write to `~/.local/share/ai-config/`
-4. **Realistic**: Tests use same code paths as production
 
 ## Writing New Tests
 
@@ -88,8 +54,10 @@ func TestNewFeature(t *testing.T) {
     // 2. Create isolated manager
     manager := repo.NewManagerWithPath(repoPath)
     
-    // 3. Create test fixtures
-    testCmd := filepath.Join(tmpDir, "test-cmd.md")
+    // 3. Create test fixtures in a real commands/ directory
+    commandsDir := filepath.Join(tmpDir, "commands")
+    os.MkdirAll(commandsDir, 0755)
+    testCmd := filepath.Join(commandsDir, "test-cmd.md")
     os.WriteFile(testCmd, []byte("---\ndescription: Test\n---\n"), 0644)
     
     // 4. Perform test operations
@@ -130,9 +98,9 @@ func TestValidation(t *testing.T) {
 }
 ```
 
-### Integration Tests
+### Integration or E2E tests
 
-Use build tag for network-dependent tests:
+Use the existing build tags when a test belongs in a slower suite:
 
 ```go
 //go:build integration
@@ -141,6 +109,14 @@ package test
 
 func TestGitClone(t *testing.T) {
     // Can use real network operations
+}
+
+//go:build e2e
+
+package e2e
+
+func TestCLIWorkflow(t *testing.T) {
+    // Exercises the built binary end to end
 }
 ```
 
@@ -188,12 +164,7 @@ os.WriteFile(file, data, 0644)  // Files
 **Problem**: Integration tests skipped by default.
 **Solution**: Use `make integration-test` explicitly.
 
-## Summary
+## Related docs
 
-Key principles:
-- ✅ All tests use isolated temporary directories
-- ✅ Tests never write to user's repository
-- ✅ Tests automatically clean up
-- ✅ Tests run safely in parallel
-- ✅ Unit tests use fixtures, integration tests use real repos
-- ✅ Prefer unit tests over integration tests
+- [docs/TESTING.md](../TESTING.md) - command selection, minimum checks, concurrency, and atomic-write expectations
+- [docs/CODING.md](../CODING.md) - repo safety rules and locally built binary guidance

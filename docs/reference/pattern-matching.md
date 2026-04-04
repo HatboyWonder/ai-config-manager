@@ -10,7 +10,7 @@ The `pkg/pattern` package provides glob pattern matching for resources. Patterns
 
 ### Basic Wildcards
 
-- `*` - Matches any sequence of characters (except `/`)
+- `*` - Matches any sequence of characters, including `/` in nested resource names such as `api/deploy`
 - `?` - Matches any single character
 - `[abc]` - Matches any character in the set (a, b, or c)
 - `[a-z]` - Matches any character in the range (a through z)
@@ -101,13 +101,13 @@ List resources matching a pattern:
 
 ```bash
 # List all skills
-aimgr list skill/*
+aimgr list "skill/*"
 
 # List skills starting with "web"
-aimgr list skill/web*
+aimgr list "skill/web*"
 
 # List all resources containing "test"
-aimgr list *test*
+aimgr list "*test*"
 ```
 
 ### Install Command
@@ -116,10 +116,10 @@ Install resources matching a pattern:
 
 ```bash
 # Install all skills
-aimgr install skill/*
+aimgr install "skill/*"
 
 # Install commands starting with "test"
-aimgr install command/test*
+aimgr install "command/test*"
 ```
 
 ### Uninstall Command
@@ -128,10 +128,10 @@ Uninstall resources matching a pattern:
 
 ```bash
 # Uninstall all agents
-aimgr uninstall agent/*
+aimgr uninstall "agent/*"
 
 # Uninstall skills ending with "helper"
-aimgr uninstall skill/*helper
+aimgr uninstall "skill/*helper"
 ```
 
 ### Repository Commands
@@ -141,8 +141,8 @@ aimgr uninstall skill/*helper
 # Add only skills from a repository
 aimgr repo add gh:owner/repo --filter "skill/*"
 
-# Add only packages
-aimgr repo add local:~/resources/ --filter "package/*"
+# Add only packages from a local directory
+aimgr repo add local:./resources --filter "package/*"
 
 # Add resources matching pattern
 aimgr repo add gh:owner/repo --filter "web-*"
@@ -173,21 +173,14 @@ aimgr repo sync
 
 `repo sync` continues using the `sources[].include` filters persisted by `repo apply-manifest`.
 
-**Remove with pattern:**
-```bash
-# Remove all test resources
-aimgr repo remove "*test*"
-
-# Remove all commands
-aimgr repo remove command/*
-```
+`aimgr repo remove` removes sources, not individual resources. Use pattern matching with `list`, `install`, `uninstall`, or `repo add --filter`.
 
 ## Code Examples
 
 ### Basic Pattern Matching
 
 ```go
-import "github.com/dynatrace-oss/ai-config-manager/pkg/pattern"
+import "github.com/dynatrace-oss/ai-config-manager/v3/pkg/pattern"
 
 // Parse pattern to extract type and check if it's a pattern
 resourceType, patternStr, isPattern := pattern.ParsePattern("skill/pdf*")
@@ -278,13 +271,13 @@ aimgr list "*test*"
 
 **Install test tools:**
 ```bash
-aimgr install command/test*
-aimgr install skill/test*
+aimgr install "command/test*"
+aimgr install "skill/test*"
 ```
 
-**Remove test packages:**
+**Uninstall test packages from a project:**
 ```bash
-aimgr repo remove package/test-*
+aimgr uninstall "package/test-*"
 ```
 
 ### Development Workflows
@@ -296,33 +289,33 @@ aimgr repo add gh:owner/repo --filter "package/dev-*"
 
 **Install web development tools:**
 ```bash
-aimgr install skill/web-*
-aimgr install command/web-*
+aimgr install "skill/web-*"
+aimgr install "command/web-*"
 ```
 
-**Remove old versions:**
+**Uninstall old versions from a project:**
 ```bash
-aimgr repo remove "*-v1"
+aimgr uninstall "*-v1"
 ```
 
 ### Bulk Operations
 
 **List all resources by type:**
 ```bash
-aimgr list command/* --format=json
-aimgr list skill/* --format=json
-aimgr list agent/* --format=json
-aimgr list package/* --format=json
+aimgr list "command/*" --format=json
+aimgr list "skill/*" --format=json
+aimgr list "agent/*" --format=json
+aimgr list "package/*" --format=json
 ```
 
-**Export specific resource types:**
+**Import only specific resource types from a local source:**
 ```bash
-aimgr repo add local:~/backup/ --filter "skill/*"
+aimgr repo add local:./backup --filter "skill/*"
 ```
 
-**Clean up deprecated resources:**
+**List deprecated resources before cleanup:**
 ```bash
-aimgr repo remove "deprecated-*"
+aimgr list "deprecated-*"
 ```
 
 ## Advanced Patterns
@@ -368,24 +361,35 @@ aimgr list "{dev,test,prod}-*"
 ### ParsePattern Function
 
 ```go
-func ParsePattern(input string) (resourceType ResourceType, pattern string, isPattern bool) {
-    // Split by "/" to check for type prefix
-    parts := strings.Split(input, "/")
-    
+func ParsePattern(arg string) (resource.ResourceType, string, bool) {
+    parts := strings.SplitN(arg, "/", 2)
+
+    var resourceType resource.ResourceType
+    var pattern string
+
     if len(parts) == 2 {
-        // Has type prefix: "type/pattern"
-        resourceType = ParseResourceType(parts[0])
+        typeStr := parts[0]
         pattern = parts[1]
+
+        switch typeStr {
+        case "command":
+            resourceType = resource.Command
+        case "skill":
+            resourceType = resource.Skill
+        case "agent":
+            resourceType = resource.Agent
+        case "package":
+            resourceType = resource.PackageType
+        default:
+            pattern = arg
+            resourceType = ""
+        }
     } else {
-        // No type prefix: "pattern"
-        resourceType = ""
-        pattern = input
+        pattern = arg
     }
-    
-    // Check if pattern contains wildcards
-    isPattern = strings.ContainsAny(pattern, "*?[{")
-    
-    return
+
+    isPattern := IsPattern(pattern)
+    return resourceType, pattern, isPattern
 }
 ```
 
@@ -394,7 +398,7 @@ func ParsePattern(input string) (resourceType ResourceType, pattern string, isPa
 ```go
 type Matcher struct {
     resourceType ResourceType  // Optional type filter
-    pattern      string        // Glob pattern
+    pattern      glob.Glob     // Compiled glob pattern
     isPattern    bool          // Is this a pattern or exact match?
 }
 
@@ -409,14 +413,7 @@ func (m *Matcher) Match(res *resource.Resource) bool {
 }
 
 func (m *Matcher) MatchName(name string) bool {
-    if !m.isPattern {
-        // Exact match
-        return name == m.pattern
-    }
-    
-    // Glob pattern match
-    matched, _ := filepath.Match(m.pattern, name)
-    return matched
+    return m.pattern.Match(name)
 }
 ```
 
@@ -424,7 +421,7 @@ func (m *Matcher) MatchName(name string) bool {
 
 1. **Use type prefixes** when filtering by resource type for efficiency
 2. **Quote patterns** in shell commands to prevent shell expansion
-3. **Test patterns** with `list` before using with `remove` or `uninstall`
+3. **Test patterns** with `list` before using with `install` or `uninstall`
 4. **Use `--dry-run`** when available for destructive operations
 5. **Be specific** to avoid unintended matches
 
@@ -449,8 +446,8 @@ If your pattern doesn't match expected resources:
 
 3. **Use exact names first**: Verify resources exist
    ```bash
-   aimgr list skill/web-helper  # Exact match
-   aimgr list "skill/web*"      # Pattern match
+aimgr list "skill/web-helper"  # Exact match
+aimgr list "skill/web*"        # Pattern match
    ```
 
 ### Unexpected Matches
@@ -459,8 +456,8 @@ If your pattern matches too many resources:
 
 1. **Add type prefix**: Narrow by resource type
    ```bash
-   aimgr list "test*"       # All resources starting with "test"
-   aimgr list "command/test*"  # Only commands starting with "test"
+aimgr list "test*"          # All resources starting with "test"
+aimgr list "command/test*" # Only commands starting with "test"
    ```
 
 2. **Be more specific**: Use longer patterns

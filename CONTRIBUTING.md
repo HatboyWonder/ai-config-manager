@@ -20,7 +20,7 @@ cd ai-config-manager
 # Build the binary
 make build
 
-# Run tests
+# Run the baseline contributor test suite
 make test
 ```
 
@@ -36,7 +36,7 @@ The `make install` target automatically detects your OS and installs the `aimgr`
   - Used by Homebrew and other package managers
   - Works with shell completion out of the box
   - No `sudo` required (if `/usr/local/bin` exists)
-- **Shell Completion**: Works automatically once installed
+- **Shell Completion**: Install the binary first, then set up completions separately with `aimgr completion <shell>`
 - **Command**: `make install` → binary at `/usr/local/bin/aimgr`
 
 #### Linux (Ubuntu, Arch, etc.)
@@ -80,7 +80,7 @@ go version  # Should show 1.25.6 or higher
 
 # Build and test
 make build
-make test   # Should pass all tests
+make test   # Should pass the baseline contributor checks
 ```
 
 ## Development Workflow
@@ -124,9 +124,10 @@ See [docs/PULL-REQUESTS.md](docs/PULL-REQUESTS.md) for branch and PR expectation
 
 ### Before Submitting
 
-- [ ] All tests pass (`make test`)
+- [ ] Baseline checks pass (`make test`)
 - [ ] Code is formatted (`make fmt`)
 - [ ] No linter warnings (`make vet`)
+- [ ] `make e2e-test` passed for CLI, install-flow, or script-entrypoint changes
 - [ ] New code has tests
 - [ ] Documentation updated (if user-facing change)
 - [ ] Commit messages are clear and descriptive
@@ -173,89 +174,15 @@ Use junction points instead of symlinks for Windows compatibility.
 
 Read **[docs/PULL-REQUESTS.md](docs/PULL-REQUESTS.md)** for branch workflow, PR description requirements, CI expectations, and review follow-up.
 
-## Detailed Guides
+## Deeper Docs
 
-For in-depth information, see the comprehensive guides in `docs/contributor-guide/`:
+Use the focused project docs when you need repository-local detail:
 
-### Writing Code
-
-→ **[Code Style Guide](docs/contributor-guide/code-style.md)**
-- Naming conventions (files, packages, types)
-- Import organization (3 groups: stdlib, external, internal)
-- Error handling (always wrap with `%w`)
-- Symlink handling (CRITICAL: use `os.Stat()` not `entry.IsDir()`)
-- File operations and best practices
-
-→ **[Architecture Guide](docs/contributor-guide/architecture.md)**
-- System overview and components
-- Package structure (17 packages)
-- Architecture rules (5 critical rules)
-- Data flows (import, install, sync)
-- Key concepts and patterns
-
-### Testing
-
-→ **[Testing Guide](docs/contributor-guide/testing.md)**
-- Test types (unit, integration, E2E)
-- Test isolation with `t.TempDir()`
-- Table-driven test patterns
-- Running specific tests
-- Troubleshooting test failures
-
-### Setup & Tools
-
-→ **[Development Environment](docs/contributor-guide/development-environment.md)**
-- mise setup for Go version management
-- IDE configuration (VS Code, GoLand)
-- Build tools and workflow
-- CI/CD consistency
-
-### Releasing
-
-→ **[Release Process](docs/contributor-guide/release-process.md)**
-- Version management
-- Release workflow
-- See [docs/contributor-guide/release-process.md](docs/contributor-guide/release-process.md) for complete guide
-
-### Pull Requests
-
-→ **[Pull Request Guide](docs/PULL-REQUESTS.md)**
-- Branch workflow and PR expectations
-- Required PR description fields
-- Review and CI follow-up
-
-### Documentation Overview
-
-→ **[Contributor Guide README](docs/contributor-guide/README.md)**
-- Overview of all contributor documentation
-- Quick navigation to all guides
-
-## Common Tasks
-
-### Running Tests
-
-```bash
-make test              # All tests (vet → unit → integration → test/...)
-make unit-test         # Fast unit tests only
-make integration-test  # Integration tests (slower)
-make e2e-test          # End-to-end tests (slowest)
-```
-
-### Code Quality
-
-```bash
-make fmt               # Format all Go code
-make vet               # Run go vet (static analysis)
-make build             # Build binary
-```
-
-### Building
-
-```bash
-make build             # Build to ./aimgr
-make install           # Build and install to INSTALL_PATH (OS-dependent)
-make clean             # Remove build artifacts
-```
+- [docs/OVERVIEW.md](docs/OVERVIEW.md) - architecture map and where common work starts
+- [docs/CODING.md](docs/CODING.md) - implementation constraints, build commands, and safety rules
+- [docs/TESTING.md](docs/TESTING.md) - test selection, isolation rules, and minimum checks
+- [docs/PULL-REQUESTS.md](docs/PULL-REQUESTS.md) - branch workflow and PR expectations
+- [docs/contributor-guide/README.md](docs/contributor-guide/README.md) - deeper contributor references for setup, architecture, and test authoring
 
 ## Getting Help
 

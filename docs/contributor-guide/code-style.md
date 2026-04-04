@@ -33,17 +33,18 @@ Complete code style guidelines for ai-config-manager contributors.
 ### Resource Name Validation
 
 Resources must follow agentskills.io naming:
-- Lowercase alphanumeric + hyphens only
+- Lowercase alphanumeric + hyphens only within each segment
+- `/` is allowed between valid segments for nested names such as `api/deploy`
 - Cannot start/end with hyphen
 - No consecutive hyphens
-- 1-64 characters max
+- 1-64 characters per segment
 
 ```go
 // Valid
-"test", "run-coverage", "pdf-processing", "skill-v2"
+"test", "run-coverage", "pdf-processing", "skill-v2", "api/deploy"
 
 // Invalid
-"Test", "test_coverage", "-test", "test--cmd"
+"Test", "test_coverage", "-test", "test--cmd", "api//deploy"
 ```
 
 ## Import Organization
@@ -63,7 +64,7 @@ import (
     "github.com/spf13/cobra"
     "gopkg.in/yaml.v3"
 
-    "github.com/dynatrace-oss/ai-config-manager/pkg/resource"
+    "github.com/dynatrace-oss/ai-config-manager/v3/pkg/resource"
 )
 ```
 

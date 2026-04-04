@@ -6,7 +6,8 @@ Welcome to the **aimgr** (ai-config-manager) documentation. This page is the cen
 
 These top-level docs capture repository-specific guidance used by contributors and AI agents:
 
-- [CODING.md](CODING.md) - Build commands, project structure, conventions, and safety rules
+- [OVERVIEW.md](OVERVIEW.md) - Project identity, architecture map, and where to start for common tasks
+- [CODING.md](CODING.md) - Build commands, implementation constraints, conventions, and safety rules
 - [TESTING.md](TESTING.md) - Test commands, isolation requirements, and concurrency expectations
 - [RELEASING.md](RELEASING.md) - Repo-specific release companion for the `github-releases` skill
 - [MONITORING.md](MONITORING.md) - Local logs, health signals, and monitoring triage workflow
@@ -53,10 +54,6 @@ Implementation details for contributors and advanced users:
 - [Repository Layout](internals/repository-layout.md) - Internal folder structure of an aimgr repository
 - [Workspace Caching](internals/workspace-caching.md) - How the workspace cache optimizes Git operations
 - [Git Tracking](internals/git-tracking.md) - How aimgr tracks repository changes with Git
-
-## For AI Agents
-
-If you are working in this repository as an AI coding agent, start with [AGENTS.md](../AGENTS.md) and then follow the routed topic docs above.
 
 ## Quick Links
 

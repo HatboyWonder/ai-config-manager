@@ -34,8 +34,8 @@ A command-line tool for discovering, installing, and managing AI resources (comm
 - The support matrix reflects current aimgr direct-install support, not every upstream customization surface a tool may expose
 - VSCode / GitHub Copilot and Windsurf support direct skill installation via aimgr
 - Skills for Copilot and Windsurf use the same `SKILL.md` format as other tools
-- Use `--tool=copilot` or `--tool=vscode` for GitHub Copilot (both names work)
-- Use `--tool=windsurf` for Windsurf
+- Use `--target copilot` or `--target vscode` for GitHub Copilot installs (both names work)
+- Use `--target windsurf` for Windsurf installs
 - GitHub Copilot / VS Code agent installs use `.github/agents/*.agent.md` (installed artifact naming)
 - Repository source agents remain logical aimgr resources in `agents/*.md`
 - GitHub Copilot / VS Code prompt files use `.github/prompts/*.prompt.md`, but aimgr intentionally does not map/install `command` resources there
@@ -72,7 +72,7 @@ go install github.com/dynatrace-oss/ai-config-manager/v3/cmd/aimgr@latest
 git clone https://github.com/dynatrace-oss/ai-config-manager.git
 cd ai-config-manager
 
-# Build and install to ~/bin
+# Build and install to the OS-specific path from `make os-info`
 make install
 
 # Or just build (outputs to ./aimgr)
@@ -91,7 +91,7 @@ aimgr config set install.targets claude
 aimgr repo add gh:owner/repo
 
 # 3. Add resources from local directory
-aimgr repo add local:~/.opencode/
+aimgr repo add local:./my-resources
 
 # 4. List available resources
 aimgr repo list
@@ -133,6 +133,7 @@ Complete documentation is available in the `docs/` directory:
 ### For Contributors
 
 - **[Contributing Guide](CONTRIBUTING.md)** - How to contribute to aimgr
+- **[Repository Overview](docs/OVERVIEW.md)** - High-level architecture and repo map
 - **[Pull Requests](docs/PULL-REQUESTS.md)** - Branch workflow, PR expectations, and review follow-up
 - **[Architecture](docs/contributor-guide/architecture.md)** - System design and components
 - **[Code Style](docs/contributor-guide/code-style.md)** - Coding standards and conventions

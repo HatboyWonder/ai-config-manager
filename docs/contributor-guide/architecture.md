@@ -17,7 +17,7 @@ High-level architecture overview and design rules for ai-config-manager contribu
 - **Commands**: Single `.md` files (e.g., `build.md`, `api/deploy.md`)
 - **Skills**: Directories with `SKILL.md` (e.g., `pdf-processing/`)
 - **Agents**: Single `.md` files with YAML frontmatter (e.g., `code-reviewer.md`)
-- **Packages**: Collections in `.package.json` (e.g., `web-tools.package.json`)
+- **Packages**: Collections stored as `*.package.json` files (e.g., `web-tools.package.json`)
 
 ### Architecture
 
@@ -75,13 +75,19 @@ Cobra command tree matching CLI structure. Each command delegates to `pkg/` for 
 | `config/` | Configuration file parsing and validation |
 | `discovery/` | Auto-discovery of resources in directories |
 | `errors/` | Error categories and structured error handling |
+| `fileutil/` | Atomic writes and shared filesystem helpers |
+| `frontmatter/` | YAML frontmatter parsing helpers |
+| `giturl/` | Git URL parsing and normalization helpers |
 | `install/` | Symlink creation and installation logic |
+| `logging/` | Structured logging setup and log writer helpers |
 | `manifest/` | Project manifests (ai.package.yaml) management |
-| `marketplace/` | Marketplace discovery and parsing (marketplace.json) |
+| `marketplace/` | Marketplace discovery, parsing, and generation helpers |
 | `metadata/` | Resource metadata tracking (.metadata/ directory) |
+| `modifications/` | Filesystem change tracking helpers |
 | `output/` | Output formatting (JSON, YAML, tables) |
 | `pattern/` | Glob pattern matching for resource selection |
 | `repo/` | Central repository management (add, list, remove) |
+| `repolock/` | Shared/exclusive repo locking and timeout behavior |
 | `repomanifest/` | Repository manifests (ai.repo.yaml) management |
 | `resource/` | Resource type definitions and loaders |
 | `source/` | Git operations and source parsing |
@@ -91,9 +97,9 @@ Cobra command tree matching CLI structure. Each command delegates to `pkg/` for 
 | `workspace/` | Git repository caching (10-50x performance) |
 
 
-### test/ - Integration Tests
+### test/ - Integration and E2E Tests
 
-End-to-end tests exercising the full system.
+Higher-level CLI, integration, and end-to-end coverage for repository workflows.
 
 ## Architecture Rules
 
@@ -105,7 +111,7 @@ End-to-end tests exercising the full system.
 
 **Correct Usage**:
 ```go
-import "github.com/dynatrace-oss/ai-config-manager/pkg/workspace"
+import "github.com/dynatrace-oss/ai-config-manager/v3/pkg/workspace"
 
 mgr, _ := workspace.NewManager(repoPath)
 clonePath, err := mgr.GetOrClone(gitURL, ref)  // Cached
@@ -132,31 +138,31 @@ import "github.com/adrg/xdg"
 // Data: ~/.local/share/ai-config/repo/
 repoPath := filepath.Join(xdg.DataHome, "ai-config", "repo")
 
-// Config: ~/.config/ai-config/
-configPath := filepath.Join(xdg.ConfigHome, "ai-config")
+// Config file: ~/.config/aimgr/aimgr.yaml
+configPath := filepath.Join(xdg.ConfigHome, "aimgr", "aimgr.yaml")
 ```
 
 **Why**: Cross-platform, respects environment variables, integrates with backup tools.
 
-### Rule 3: Build Tags for Test Categories
+### Rule 3: Build Tags for Integration and E2E Categories
 
-**Tests MUST use build tags** to categorize: `unit` or `integration`.
+**Integration and E2E tests MUST use the repo's existing categorization.** Fast unit coverage runs through ordinary `_test.go` files plus `go test -short`, while slower suites use build tags such as `integration` and `e2e`.
 
 ```go
-//go:build unit
-package mypackage_test
-func TestFast(t *testing.T) { }
-
 //go:build integration
 package test
 func TestSlow(t *testing.T) { }
+
+//go:build e2e
+package e2e
+func TestWorkflow(t *testing.T) { }
 ```
 
 **Running Tests**:
 ```bash
-go test -tags=unit ./...           # Fast unit tests
-go test -tags=integration ./...    # Slow integration tests
-go test -tags="unit integration" ./...  # All tests
+go test -short ./cmd/... ./pkg/... # Fast unit tests
+go test -v -tags=integration ./pkg/... && go test -v ./test/...  # Slow integration tests
+go test -tags=e2e ./test/e2e/...   # End-to-end tests
 ```
 
 ### Rule 4: Error Wrapping Requirements
@@ -251,7 +257,10 @@ Git repositories cached in `.workspace/` for 10-50x performance improvement:
 
 ```
 ~/.local/share/ai-config/repo/.workspace/
-└── github.com/owner/repo/main/  # Cached clone at 'main' ref
+├── <url-hash>/              # Cached clone for one normalized Git URL
+│   ├── .git/
+│   └── ...
+└── .cache-metadata.json     # Tracks URL ↔ cache mapping and last-used ref
 ```
 
 ## Data Flows
@@ -303,7 +312,7 @@ Git repositories cached in `.workspace/` for 10-50x performance improvement:
 │   ├── packages/
 │   ├── .metadata/           # Resource tracking
 │   └── .workspace/          # Git cache
-└── config.yaml              # Optional
+└── (config lives under ~/.config/aimgr/aimgr.yaml)
 ```
 
 ### Project Installation
@@ -316,6 +325,7 @@ project-root/
 │   └── agents/              # Claude Code agents
 ├── .opencode/               # OpenCode resources
 ├── .github/skills/          # GitHub Copilot skills
+├── .github/agents/          # GitHub Copilot agents
 ├── .windsurf/skills/        # Windsurf skills
 └── ai.package.yaml          # Project manifest (optional)
 ```
