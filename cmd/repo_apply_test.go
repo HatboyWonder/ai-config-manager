@@ -26,7 +26,7 @@ func TestRepoApplyCommandHelpText(t *testing.T) {
 		"repo show-manifest",
 		"repo apply-manifest <path-or-url>",
 		"Apply is additive",
-		"repo drop-source",
+		"repo remove",
 		"aimgr repo apply-manifest ./ai.repo.yaml",
 		"aimgr repo apply-manifest -",
 		"https://example.com/platform/ai.repo.yaml",

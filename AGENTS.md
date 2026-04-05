@@ -27,9 +27,9 @@ Read `docs/RELEASING.md` for repo-specific release details.
 Load the **observability-triage** skill for log analysis and issue triage.
 Read `docs/MONITORING.md` for available signals and local triage workflow.
 
-## Pull Requests
+## Change Workflow
 
-Read `docs/PULL-REQUESTS.md` for branch workflow, PR expectations, and review follow-up.
+Read `docs/CHANGE-WORKFLOW.md` for commit, push, branch, PR, review, and merge rules.
 
 ## Issue Tracking
 

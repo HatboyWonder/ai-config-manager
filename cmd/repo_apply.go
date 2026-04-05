@@ -39,7 +39,7 @@ Merge behavior:
   - Same source name + identical definition: no-op
   - Same source name + different location: conflict (never overwritten)
   - Same location with different include filters: replace or preserve (configurable)
-  - To remove stale sources after a team manifest changes, use repo drop-source explicitly
+  - To remove stale sources after a team manifest changes, use repo remove explicitly
 
 Fresh repository behavior:
   - apply-manifest auto-initializes the local repository (same bootstrap as repo init)
@@ -67,7 +67,7 @@ Relationship to repo init:
 	  aimgr install
 
 	  # Re-apply is additive; stale sources are removed explicitly
-	  aimgr repo drop-source old-source
+	  aimgr repo remove old-source
 
 	  # Pipe the current manifest back into apply-manifest (no-op round-trip)
 	  aimgr repo show-manifest | aimgr repo apply-manifest -

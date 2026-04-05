@@ -1,6 +1,6 @@
 # Architecture Guide
 
-High-level architecture overview and design rules for ai-config-manager contributors.
+Start with [docs/OVERVIEW.md](../OVERVIEW.md) for the canonical repo map and architecture routing. This file is retained as deeper background for contributors who need longer design notes, package detail, and data-flow examples.
 
 ## System Overview
 

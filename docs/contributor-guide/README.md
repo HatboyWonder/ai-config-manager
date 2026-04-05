@@ -1,113 +1,23 @@
 # Contributor Guide
 
-Documentation for developers working on ai-config-manager.
+Use [CONTRIBUTING.md](../../CONTRIBUTING.md) for the contributor workflow and the canonical docs under `docs/` for repository rules. This subtree is retained for deeper reference, longer examples, and background that would make the canonical docs noisy.
 
-## Quick Start
+## Canonical workflow docs
 
-```bash
-# Clone and setup
-git clone https://github.com/dynatrace-oss/ai-config-manager.git
-cd ai-config-manager
+- [CONTRIBUTING.md](../../CONTRIBUTING.md) - onboarding flow and commit message format
+- [Overview](../OVERVIEW.md) - repository architecture map and task start points
+- [Coding](../CODING.md) - implementation constraints, build commands, and safety rules
+- [Testing](../TESTING.md) - change-to-check mapping and validation commands
+- [Change Workflow](../CHANGE-WORKFLOW.md) - commit, push, branch, PR, and merge expectations
+- [Releasing](../RELEASING.md) - repo-local release facts and required skill entrypoint
 
-# Build and test
-make build
-make test
-```
+## Deeper reference in this subtree
 
-For detailed setup, see [Development Environment](development-environment.md).
-
-## Core Documentation
-
-### Getting Started
-
-- **[Development Environment](development-environment.md)** - Setup guide (Go, mise, tools)
-- **[Code Style Guide](code-style.md)** - Naming, imports, error handling, symlinks
-- **[Testing Guide](testing.md)** - Testing approach, best practices, troubleshooting
-- **[Release Process](release-process.md)** - Version numbering, creating releases
-
-### Architecture
-
-- **[Architecture Guide](architecture.md)** - System overview, design rules, data flows
-  - Architecture rules (Git workspace, XDG, error handling, symlinks)
-  - Package structure and responsibilities across `pkg/`
-  - Key concepts and patterns
-
-### Additional Resources
-
-- **[CONTRIBUTING.md](../../CONTRIBUTING.md)** - Quick start and workflow guide
-- **[Pull Request Guide](../PULL-REQUESTS.md)** - Branch workflow, PR descriptions, and review expectations
-- **[AGENTS.md](../../AGENTS.md)** - Quick reference for AI agents
-
-## Essential Commands
-
-### Build & Test
-
-```bash
-make build      # Build binary
-make os-info    # Show OS-specific install path
-make install    # Install to the OS-specific path from make os-info
-make test       # Baseline contributor checks (vet → unit → integration)
-make e2e-test   # End-to-end CLI coverage when workflow changes warrant it
-```
-
-### Code Quality
-
-```bash
-make fmt        # Format Go code
-make vet        # Run static analysis
-```
-
-## Code Style Quick Reference
-
-### Import Organization
-
-```go
-import (
-    "fmt"           // 1. Standard library
-
-    "github.com/spf13/cobra"  // 2. External dependencies
-
-    "github.com/dynatrace-oss/ai-config-manager/v3/pkg/resource"  // 3. Internal
-)
-```
-
-### Naming
-
-- Files: `lowercase_with_underscores.go`
-- Types: `PascalCase`
-- Functions: `PascalCase` (exported), `camelCase` (unexported)
-- Resources: lowercase alphanumeric and hyphen segments, with optional `/` separators for nested names such as `api/deploy`
-
-### Error Handling
-
-```go
-if err != nil {
-    return fmt.Errorf("failed to load: %w", err)
-}
-```
-
-### Symlink Handling (CRITICAL)
-
-```go
-// ✅ CORRECT: Use os.Stat() to follow symlinks
-entries, _ := os.ReadDir(dir)
-for _, entry := range entries {
-    path := filepath.Join(dir, entry.Name())
-    info, err := os.Stat(path)  // os.Stat follows symlinks
-    if err != nil || !info.IsDir() { continue }
-    processDirectory(path)
-}
-```
-
-See [Code Style Guide](code-style.md) for complete details.
-
-## Before Submitting
-
-- [ ] Tests pass: `make test`
-- [ ] Code formatted: `make fmt`
-- [ ] No warnings: `make vet`
-- [ ] Tests added for new functionality
-- [ ] Documentation updated (if user-facing)
+- [Development Environment](development-environment.md) - local setup detail, tool installation, and IDE notes
+- [Code Style Guide](code-style.md) - longer examples for naming, imports, errors, and symlink handling
+- [Architecture Guide](architecture.md) - extended design background, data flows, and package responsibilities
+- [Testing Guide](testing.md) - test-authoring patterns and troubleshooting details
+- [Release Process](release-process.md) - expanded release execution notes after starting with the release skill and canonical docs
 
 ## Getting Help
 

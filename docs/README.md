@@ -1,6 +1,6 @@
 # Documentation Index
 
-Welcome to the **aimgr** (ai-config-manager) documentation. This page is the central index for project docs, contributor guides, and repo-specific workflow references.
+Use [README.md](../README.md) for the repository entrypoint and [AGENTS.md](../AGENTS.md) for agent routing. Use this page when you are browsing the `docs/` tree directly.
 
 ## Repo Workflow Docs
 
@@ -11,7 +11,7 @@ These top-level docs capture repository-specific guidance used by contributors a
 - [TESTING.md](TESTING.md) - Test commands, isolation requirements, and concurrency expectations
 - [RELEASING.md](RELEASING.md) - Repo-specific release companion for the `github-releases` skill
 - [MONITORING.md](MONITORING.md) - Local logs, health signals, and monitoring triage workflow
-- [PULL-REQUESTS.md](PULL-REQUESTS.md) - Branch workflow, PR expectations, and review follow-up
+- [CHANGE-WORKFLOW.md](CHANGE-WORKFLOW.md) - Commit, push, branch, PR, and merge expectations
 
 ## User Guide
 
@@ -45,7 +45,7 @@ Deeper contributor documentation for development workflows:
 - [Testing](contributor-guide/testing.md) - Test types, patterns, and troubleshooting
 - [Release Process](contributor-guide/release-process.md) - Full release process details
 
-See also [CONTRIBUTING.md](../CONTRIBUTING.md) for the contribution workflow and [PULL-REQUESTS.md](PULL-REQUESTS.md) for PR-specific expectations.
+See also [CONTRIBUTING.md](../CONTRIBUTING.md) for the contribution workflow and [CHANGE-WORKFLOW.md](CHANGE-WORKFLOW.md) for change-landing expectations.
 
 ## Internals
 

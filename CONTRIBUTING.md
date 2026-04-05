@@ -1,7 +1,5 @@
 # Contributing to aimgr
 
-Thank you for your interest in contributing to aimgr! This guide will help you get started quickly.
-
 ## Quick Start
 
 ### Prerequisites
@@ -104,33 +102,31 @@ git checkout -b feature/your-feature-name
 
 1. Write your code
 2. Add tests for new functionality
-3. Follow the [Code Style Guide](docs/contributor-guide/code-style.md)
+3. Follow [docs/CODING.md](docs/CODING.md) for repository-specific implementation rules
 4. Run tests frequently: `make test`
 
 ### 4. Commit Your Changes
 
 Follow conventional commit format (see below)
 
-### 5. Push and Create PR
+### 5. Land the Change
+
+Use [docs/CHANGE-WORKFLOW.md](docs/CHANGE-WORKFLOW.md) to choose the right landing path for this change.
+
+If you are publishing a feature branch, push it with:
 
 ```bash
-git push origin feature/your-feature-name
+git push -u origin feature/your-feature-name
 ```
-
-Then open a Pull Request on GitHub.
-See [docs/PULL-REQUESTS.md](docs/PULL-REQUESTS.md) for branch and PR expectations.
 
 ## Submitting Changes
 
 ### Before Submitting
 
-- [ ] Baseline checks pass (`make test`)
-- [ ] Code is formatted (`make fmt`)
-- [ ] No linter warnings (`make vet`)
-- [ ] `make e2e-test` passed for CLI, install-flow, or script-entrypoint changes
+- [ ] Minimum checks from [docs/TESTING.md](docs/TESTING.md) passed for the change type
 - [ ] New code has tests
-- [ ] Documentation updated (if user-facing change)
-- [ ] Commit messages are clear and descriptive
+- [ ] Documentation updated when commands, workflows, or user-facing behavior changed
+- [ ] Commit messages follow the format below
 
 ### Commit Message Format
 
@@ -170,9 +166,9 @@ fix(install): handle symlink creation on Windows
 Use junction points instead of symlinks for Windows compatibility.
 ```
 
-### Pull Requests
+### Change Landing
 
-Read **[docs/PULL-REQUESTS.md](docs/PULL-REQUESTS.md)** for branch workflow, PR description requirements, CI expectations, and review follow-up.
+Read **[docs/CHANGE-WORKFLOW.md](docs/CHANGE-WORKFLOW.md)** for commit, push, branch, PR, review, and merge expectations.
 
 ## Deeper Docs
 
@@ -181,7 +177,7 @@ Use the focused project docs when you need repository-local detail:
 - [docs/OVERVIEW.md](docs/OVERVIEW.md) - architecture map and where common work starts
 - [docs/CODING.md](docs/CODING.md) - implementation constraints, build commands, and safety rules
 - [docs/TESTING.md](docs/TESTING.md) - test selection, isolation rules, and minimum checks
-- [docs/PULL-REQUESTS.md](docs/PULL-REQUESTS.md) - branch workflow and PR expectations
+- [docs/CHANGE-WORKFLOW.md](docs/CHANGE-WORKFLOW.md) - commit, push, branch, PR, and merge expectations
 - [docs/contributor-guide/README.md](docs/contributor-guide/README.md) - deeper contributor references for setup, architecture, and test authoring
 
 ## Getting Help

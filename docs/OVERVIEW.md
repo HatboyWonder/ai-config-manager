@@ -68,4 +68,4 @@
 - `docs/CODING.md` — implementation constraints, build commands, and mutation safety
 - `docs/TESTING.md` — required checks, isolation rules, and change-to-test mapping
 - `docs/RELEASING.md` — repo-local release facts that supplement the `github-releases` skill
-- `docs/PULL-REQUESTS.md` — branch, PR, and review expectations
+- `docs/CHANGE-WORKFLOW.md` — commit, push, branch, PR, and merge expectations

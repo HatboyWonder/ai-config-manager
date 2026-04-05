@@ -74,13 +74,13 @@ Team update guidance:
 
 1. Publish updated shared `ai.repo.yaml`.
 2. Re-apply it locally/in CI with `repo apply-manifest`.
-3. Explicitly remove stale sources with `repo drop-source` when needed.
+3. Explicitly remove stale sources with `repo remove` when needed.
 
 Example:
 
 ```bash
 aimgr repo apply-manifest https://example.com/team/project-a/ai.repo.yaml
-aimgr repo drop-source source-a
+aimgr repo remove source-a
 aimgr repo sync
 aimgr install
 ```

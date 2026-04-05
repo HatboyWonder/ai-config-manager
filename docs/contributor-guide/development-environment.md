@@ -1,6 +1,6 @@
 # Development Environment Setup
 
-Local development setup for ai-config-manager.
+Start with [CONTRIBUTING.md](../../CONTRIBUTING.md) for the canonical onboarding flow. This file is retained as deeper local-setup reference for tool installation, IDE notes, and troubleshooting.
 
 ## Prerequisites
 

@@ -134,7 +134,7 @@ Complete documentation is available in the `docs/` directory:
 
 - **[Contributing Guide](CONTRIBUTING.md)** - How to contribute to aimgr
 - **[Repository Overview](docs/OVERVIEW.md)** - High-level architecture and repo map
-- **[Pull Requests](docs/PULL-REQUESTS.md)** - Branch workflow, PR expectations, and review follow-up
+- **[Change Workflow](docs/CHANGE-WORKFLOW.md)** - Commit, push, branch, PR, and merge expectations
 - **[Architecture](docs/contributor-guide/architecture.md)** - System design and components
 - **[Code Style](docs/contributor-guide/code-style.md)** - Coding standards and conventions
 - **[Testing](docs/contributor-guide/testing.md)** - Test guidelines and patterns
@@ -145,12 +145,6 @@ Complete documentation is available in the `docs/` directory:
 ## Contributing
 
 Contributions are welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, code style, and how to submit changes.
-
-Quick reference:
-- Run `make fmt` to format code
-- Run `make test` before committing
-- Follow the code style guidelines
-- Update documentation for new features
 
 ## License
 

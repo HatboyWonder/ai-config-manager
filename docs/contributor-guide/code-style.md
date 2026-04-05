@@ -1,6 +1,6 @@
 # Code Style Guide
 
-Complete code style guidelines for ai-config-manager contributors.
+Start with [docs/CODING.md](../CODING.md) for the canonical implementation rules. This file is retained as deeper reference for contributors who need longer examples for naming, imports, error handling, and symlink-safe filesystem work.
 
 ## General Principles
 
