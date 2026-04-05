@@ -8,28 +8,34 @@
 
 ## Fast evidence path
 
-1. `.beads/daemon-error` (if present)
-2. `.beads/daemon.log`
-3. `.beads/dolt-server.log`
-4. `~/.local/share/opencode/log/*.log`
+1. `bd doctor` / `bd version` / `./aimgr --version` (always available commands)
+2. `.beads/dolt-server.log` (when beads services have run)
+3. `~/.local/share/opencode/log/*.log` (user-level OpenCode runtime logs)
+4. `.beads/daemon-error` (if present)
 5. `logs/operations.log` (if aimgr file logging is enabled)
+6. `.beads/daemon.log` (optional; environment/version-dependent)
 
 ## Available Data
 
 ### Local tool logs
 
-- `.beads/daemon.log`
-  - Beads daemon lifecycle, import/export activity, sync failures, and warnings.
+Expected local signals:
+
 - `.beads/dolt-server.log`
-  - Dolt SQL server startup, connections, and database-level errors used by beads.
+  - Dolt SQL server startup, connections, and database-level errors used by beads (after running beads commands that start/use services).
+- `~/.local/share/opencode/log/*.log`
+  - OpenCode runtime logs, plugin startup, config warnings, and session errors.
+
+Optional / runtime-created / historical signals:
+
 - `.beads/daemon-error` (optional)
   - Last fatal daemon/bootstrap issue when the beads daemon records one. Treat it as high-signal when present.
 - `logs/operations.log` (runtime-created)
   - Aimgr structured repo-operation log when aimgr file logging is active.
-- `debug.log`
+- `.beads/daemon.log` (optional, environment/version-dependent)
+  - Daemon lifecycle/import-export detail when a beads daemon log is emitted in the local setup.
+- `debug.log` (historical)
   - Historical local debug output from related tooling in this workspace.
-- `~/.local/share/opencode/log/*.log`
-  - OpenCode runtime logs, plugin startup, config warnings, and session errors.
 
 ### Health commands
 
@@ -73,8 +79,9 @@ Use the local `./aimgr` binary for validation, not a globally installed `aimgr` 
 
 When asked to analyze monitoring data for this repo:
 
-1. Check `.beads/daemon-error` when present
-2. Review `.beads/daemon.log` and `.beads/dolt-server.log`
+1. Run lightweight health commands (`bd version`, `bd doctor`, `./aimgr --version`)
+2. Review `.beads/dolt-server.log` when beads services have run
 3. Review current OpenCode logs in `~/.local/share/opencode/log/`
-4. Run lightweight health commands (`bd version`, `bd doctor`, `./aimgr --version`)
-5. Group findings by root cause and create/update beads issues for clear tooling bugs
+4. Check `.beads/daemon-error` and `.beads/daemon.log` only when present
+5. Include `logs/operations.log` only when aimgr file logging is enabled
+6. Group findings by root cause and create/update beads issues for clear tooling bugs

@@ -72,7 +72,6 @@ Source Formats:
   Local directory:
     local:./relative/path      Relative path (symlinked)
     local:/absolute/path       Absolute path (symlinked)
-    local:~/home/path          Home-relative path (symlinked)
 
 Commands are single .md files with YAML frontmatter.
 Skills are directories containing a SKILL.md file.
@@ -100,7 +99,7 @@ Examples:
   aimgr repo add git@bitbucket.org:org/repo.git
 
   # Add from local directory
-  aimgr repo add local:~/.opencode/
+  aimgr repo add local:/home/user/.opencode/
   aimgr repo add local:./my-resources/
 
   # With options

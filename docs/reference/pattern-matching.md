@@ -31,66 +31,66 @@ Patterns can optionally include a resource type prefix:
 
 **Match all resources:**
 ```bash
-aimgr list "*"
+aimgr repo list "*"
 ```
 
 **Match resources starting with "test":**
 ```bash
-aimgr list "test*"
+aimgr repo list "test*"
 ```
 
 **Match resources ending with "helper":**
 ```bash
-aimgr list "*helper"
+aimgr repo list "*helper"
 ```
 
 **Match resources containing "web":**
 ```bash
-aimgr list "*web*"
+aimgr repo list "*web*"
 ```
 
 ### Type-Specific Patterns
 
 **Match all skills:**
 ```bash
-aimgr list "skill/*"
+aimgr repo list "skill/*"
 ```
 
 **Match all packages:**
 ```bash
-aimgr list "package/*"
+aimgr repo list "package/*"
 ```
 
 **Match all agents:**
 ```bash
-aimgr list "agent/*"
+aimgr repo list "agent/*"
 ```
 
 **Match all commands:**
 ```bash
-aimgr list "command/*"
+aimgr repo list "command/*"
 ```
 
 ### Combined Patterns
 
 **Match skills starting with "pdf":**
 ```bash
-aimgr list "skill/pdf*"
+aimgr repo list "skill/pdf*"
 ```
 
 **Match packages with "tools" in the name:**
 ```bash
-aimgr list "package/*tools*"
+aimgr repo list "package/*tools*"
 ```
 
 **Match commands starting with "test" or "build":**
 ```bash
-aimgr list "command/{test,build}*"
+aimgr repo list "command/{test,build}*"
 ```
 
 **Match skills with version suffix:**
 ```bash
-aimgr list "skill/*-v?"
+aimgr repo list "skill/*-v?"
 ```
 
 ## CLI Usage
@@ -101,13 +101,13 @@ List resources matching a pattern:
 
 ```bash
 # List all skills
-aimgr list "skill/*"
+aimgr repo list "skill/*"
 
 # List skills starting with "web"
-aimgr list "skill/web*"
+aimgr repo list "skill/web*"
 
 # List all resources containing "test"
-aimgr list "*test*"
+aimgr repo list "*test*"
 ```
 
 ### Install Command
@@ -173,7 +173,7 @@ aimgr repo sync
 
 `repo sync` continues using the `sources[].include` filters persisted by `repo apply-manifest`.
 
-`aimgr repo remove` removes sources, not individual resources. Use pattern matching with `list`, `install`, `uninstall`, or `repo add --filter`.
+`aimgr repo remove` removes sources, not individual resources. Use pattern matching with `repo list`, `install`, `uninstall`, or `repo add --filter`.
 
 ## Code Examples
 
@@ -266,7 +266,7 @@ matcher, _ := pattern.NewMatcher("skill/pdf-processing")
 
 **Find all test-related resources:**
 ```bash
-aimgr list "*test*"
+aimgr repo list "*test*"
 ```
 
 **Install test tools:**
@@ -302,10 +302,10 @@ aimgr uninstall "*-v1"
 
 **List all resources by type:**
 ```bash
-aimgr list "command/*" --format=json
-aimgr list "skill/*" --format=json
-aimgr list "agent/*" --format=json
-aimgr list "package/*" --format=json
+aimgr repo list "command/*" --format=json
+aimgr repo list "skill/*" --format=json
+aimgr repo list "agent/*" --format=json
+aimgr repo list "package/*" --format=json
 ```
 
 **Import only specific resource types from a local source:**
@@ -315,7 +315,7 @@ aimgr repo add local:./backup --filter "skill/*"
 
 **List deprecated resources before cleanup:**
 ```bash
-aimgr list "deprecated-*"
+aimgr repo list "deprecated-*"
 ```
 
 ## Advanced Patterns
@@ -325,10 +325,10 @@ aimgr list "deprecated-*"
 **Match version suffixes:**
 ```bash
 # Match v1, v2, v3, etc.
-aimgr list "*-v[0-9]"
+aimgr repo list "*-v[0-9]"
 
 # Match va, vb, vc
-aimgr list "*-v[a-c]"
+aimgr repo list "*-v[a-c]"
 ```
 
 ### Brace Expansion
@@ -336,10 +336,10 @@ aimgr list "*-v[a-c]"
 **Match multiple alternatives:**
 ```bash
 # Match build or test commands
-aimgr list "command/{build,test}"
+aimgr repo list "command/{build,test}"
 
 # Match dev or prod packages
-aimgr list "package/{dev,prod}-*"
+aimgr repo list "package/{dev,prod}-*"
 ```
 
 ### Complex Patterns
@@ -347,13 +347,13 @@ aimgr list "package/{dev,prod}-*"
 **Match specific naming patterns:**
 ```bash
 # Match resources with namespace prefix
-aimgr list "company-*"
+aimgr repo list "company-*"
 
 # Match resources with category and version
-aimgr list "*-web-v?"
+aimgr repo list "*-web-v?"
 
 # Match resources in specific categories
-aimgr list "{dev,test,prod}-*"
+aimgr repo list "{dev,test,prod}-*"
 ```
 
 ## Pattern Matching Implementation
@@ -421,7 +421,7 @@ func (m *Matcher) MatchName(name string) bool {
 
 1. **Use type prefixes** when filtering by resource type for efficiency
 2. **Quote patterns** in shell commands to prevent shell expansion
-3. **Test patterns** with `list` before using with `install` or `uninstall`
+3. **Test patterns** with `repo list` before using with `install` or `uninstall`
 4. **Use `--dry-run`** when available for destructive operations
 5. **Be specific** to avoid unintended matches
 
@@ -433,21 +433,21 @@ If your pattern doesn't match expected resources:
 
 1. **Check quoting**: Use quotes to prevent shell expansion
    ```bash
-   aimgr list "skill/*"  # Correct
-   aimgr list skill/*    # May expand in shell
+   aimgr repo list "skill/*"  # Correct
+   aimgr repo list skill/*    # May expand in shell
    ```
 
 2. **Test incrementally**: Build patterns step by step
    ```bash
-   aimgr list "*"           # All resources
-   aimgr list "web*"        # Resources starting with "web"
-   aimgr list "skill/web*"  # Skills starting with "web"
+   aimgr repo list "*"           # All resources
+   aimgr repo list "web*"        # Resources starting with "web"
+   aimgr repo list "skill/web*"  # Skills starting with "web"
    ```
 
 3. **Use exact names first**: Verify resources exist
    ```bash
-aimgr list "skill/web-helper"  # Exact match
-aimgr list "skill/web*"        # Pattern match
+aimgr repo list "skill/web-helper"  # Exact match
+aimgr repo list "skill/web*"        # Pattern match
    ```
 
 ### Unexpected Matches
@@ -456,21 +456,21 @@ If your pattern matches too many resources:
 
 1. **Add type prefix**: Narrow by resource type
    ```bash
-aimgr list "test*"          # All resources starting with "test"
-aimgr list "command/test*" # Only commands starting with "test"
+aimgr repo list "test*"          # All resources starting with "test"
+aimgr repo list "command/test*" # Only commands starting with "test"
    ```
 
 2. **Be more specific**: Use longer patterns
    ```bash
-   aimgr list "*test*"         # Too broad
-   aimgr list "test-*"         # Better
-   aimgr list "test-helper-*"  # Most specific
+   aimgr repo list "*test*"         # Too broad
+   aimgr repo list "test-*"         # Better
+   aimgr repo list "test-helper-*"  # Most specific
    ```
 
 3. **Use character classes**: Match specific patterns
    ```bash
-   aimgr list "*-v?"           # Only -v followed by one char
-   aimgr list "*-v[0-9]"       # Only -v followed by digit
+   aimgr repo list "*-v?"           # Only -v followed by one char
+   aimgr repo list "*-v[0-9]"       # Only -v followed by digit
    ```
 
 ## Related Documentation
