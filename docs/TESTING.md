@@ -8,7 +8,7 @@
 | Fast local regression | `make unit-test` | `go test -v -short ./cmd/...` and `./pkg/...` (excludes `//go:build integration` files) |
 | Integration coverage | `make integration-test` | `go test -v -tags=integration ./cmd/...` + `./pkg/...` plus `go test -v ./test/...` |
 | Full CLI end-to-end coverage | `make e2e-test` | `go test -tags=e2e ./test/e2e/` |
-| Main CI test-job parity | `go test -race ./...` | Mirrors the non-E2E `Run tests` step in `.github/workflows/build.yml` |
+| Main CI test-job parity | `make unit-test && make integration-test` | Mirrors the non-E2E test coverage path in `.github/workflows/build.yml` |
 
 ## Minimum checks by change type
 

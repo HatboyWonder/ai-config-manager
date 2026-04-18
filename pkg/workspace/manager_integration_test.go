@@ -3,17 +3,57 @@
 package workspace
 
 import (
+	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 	"testing"
 )
 
-// TestGetOrClone_Integration tests GetOrClone with a real Git repository
-// This test requires network access and git to be installed
-func TestGetOrClone_Integration(t *testing.T) {
-	// Check if git is available
+func requireGitForWorkspaceIntegration(t *testing.T) {
+	t.Helper()
 	if err := exec.Command("git", "--version").Run(); err != nil {
 		t.Skip("git not available, skipping integration test")
 	}
+}
+
+func createLocalGitRemoteForWorkspaceIntegration(t *testing.T) string {
+	t.Helper()
+
+	seedRepo := filepath.Join(t.TempDir(), "seed")
+	if err := os.MkdirAll(seedRepo, 0755); err != nil {
+		t.Fatalf("failed to create seed repo: %v", err)
+	}
+
+	runGit := func(dir string, args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %s failed: %v\n%s", strings.Join(args, " "), err, string(output))
+		}
+	}
+
+	runGit(seedRepo, "init")
+	if err := os.WriteFile(filepath.Join(seedRepo, "README.md"), []byte("workspace integration test fixture\n"), 0644); err != nil {
+		t.Fatalf("failed to write seed file: %v", err)
+	}
+	runGit(seedRepo, "add", "README.md")
+	runGit(seedRepo, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "initial")
+	runGit(seedRepo, "branch", "-M", "main")
+
+	baredir := filepath.Join(t.TempDir(), "remote.git")
+	cmd := exec.Command("git", "clone", "--bare", seedRepo, baredir)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("failed to create bare remote: %v\n%s", err, string(output))
+	}
+
+	return baredir
+}
+
+// TestGetOrClone_Integration tests GetOrClone with a deterministic local Git fixture.
+func TestGetOrClone_Integration(t *testing.T) {
+	requireGitForWorkspaceIntegration(t)
 
 	tmpDir := t.TempDir()
 	mgr, err := NewManager(tmpDir)
@@ -21,15 +61,13 @@ func TestGetOrClone_Integration(t *testing.T) {
 		t.Fatalf("NewManager failed: %v", err)
 	}
 
-	// Use a small, stable public repository for testing
-	testURL := "https://github.com/dynatrace-oss/ai-config-manager-test-repo"
+	testURL := createLocalGitRemoteForWorkspaceIntegration(t)
 	testRef := "main"
 
 	// First call should clone
 	cachePath1, err := mgr.GetOrClone(testURL, testRef)
 	if err != nil {
-		// If this fails, the test repo might not exist - skip test
-		t.Skipf("GetOrClone failed (test repo may not exist): %v", err)
+		t.Fatalf("GetOrClone failed: %v", err)
 	}
 
 	// Verify cache path exists
@@ -69,13 +107,9 @@ func TestGetOrClone_Integration(t *testing.T) {
 	}
 }
 
-// TestUpdate_Integration tests Update with a real Git repository
-// This test requires network access and git to be installed
+// TestUpdate_Integration tests Update with a deterministic local Git fixture.
 func TestUpdate_Integration(t *testing.T) {
-	// Check if git is available
-	if err := exec.Command("git", "--version").Run(); err != nil {
-		t.Skip("git not available, skipping integration test")
-	}
+	requireGitForWorkspaceIntegration(t)
 
 	tmpDir := t.TempDir()
 	mgr, err := NewManager(tmpDir)
@@ -83,14 +117,13 @@ func TestUpdate_Integration(t *testing.T) {
 		t.Fatalf("NewManager failed: %v", err)
 	}
 
-	// Use a small, stable public repository for testing
-	testURL := "https://github.com/dynatrace-oss/ai-config-manager-test-repo"
+	testURL := createLocalGitRemoteForWorkspaceIntegration(t)
 	testRef := "main"
 
 	// First clone the repo
 	cachePath, err := mgr.GetOrClone(testURL, testRef)
 	if err != nil {
-		t.Skipf("GetOrClone failed (test repo may not exist): %v", err)
+		t.Fatalf("GetOrClone failed: %v", err)
 	}
 
 	// Now update it
@@ -122,10 +155,7 @@ func TestUpdate_Integration(t *testing.T) {
 
 // TestListCached_WithCaches verifies ListCached returns cached URLs
 func TestListCached_WithCaches(t *testing.T) {
-	// Check if git is available
-	if err := exec.Command("git", "--version").Run(); err != nil {
-		t.Skip("git not available")
-	}
+	requireGitForWorkspaceIntegration(t)
 
 	tempDir := t.TempDir()
 	mgr, err := NewManager(tempDir)
@@ -133,13 +163,12 @@ func TestListCached_WithCaches(t *testing.T) {
 		t.Fatalf("NewManager failed: %v", err)
 	}
 
-	// Use the test repository
-	testURL := "https://github.com/dynatrace-oss/ai-config-manager-test-repo"
+	testURL := createLocalGitRemoteForWorkspaceIntegration(t)
 
 	// Clone to cache
 	_, err = mgr.GetOrClone(testURL, "main")
 	if err != nil {
-		t.Skipf("GetOrClone failed (test repo may not exist): %v", err)
+		t.Fatalf("GetOrClone failed: %v", err)
 	}
 
 	// List caches
@@ -161,10 +190,7 @@ func TestListCached_WithCaches(t *testing.T) {
 
 // TestRemove verifies removing a cached repository
 func TestRemove(t *testing.T) {
-	// Check if git is available
-	if err := exec.Command("git", "--version").Run(); err != nil {
-		t.Skip("git not available")
-	}
+	requireGitForWorkspaceIntegration(t)
 
 	tempDir := t.TempDir()
 	mgr, err := NewManager(tempDir)
@@ -172,13 +198,12 @@ func TestRemove(t *testing.T) {
 		t.Fatalf("NewManager failed: %v", err)
 	}
 
-	// Use the test repository
-	testURL := "https://github.com/dynatrace-oss/ai-config-manager-test-repo"
+	testURL := createLocalGitRemoteForWorkspaceIntegration(t)
 
 	// Clone to cache
 	cachePath, err := mgr.GetOrClone(testURL, "main")
 	if err != nil {
-		t.Skipf("GetOrClone failed (test repo may not exist): %v", err)
+		t.Fatalf("GetOrClone failed: %v", err)
 	}
 
 	// Verify cache exists - use os.Stat instead

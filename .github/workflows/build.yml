@@ -51,7 +51,9 @@ jobs:
         run: make build
 
       - name: Run tests
-        run: go test -race ./...
+        run: |
+          make unit-test
+          make integration-test
 
   e2e-test:
     name: E2E Tests

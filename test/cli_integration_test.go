@@ -564,17 +564,17 @@ func TestCLIMetadataTracking(t *testing.T) {
 // TestCLIMetadataUpdatedOnUpdate tests metadata timestamps are updated
 
 // TestCLIMetadataDeletedOnRemove tests metadata is deleted with resource
-// NOTE: Currently skipped because orphan cleanup doesn't work for file-path sources
-// See: https://github.com/dynatrace-oss/ai-config-manager/issues/TBD
+// when removing a tracked local source.
 func TestCLIMetadataDeletedOnRemove(t *testing.T) {
-	t.Skip("Orphan cleanup not yet implemented for file-path sources - needs architecture fix")
 	setupTestEnvironment(t)
 
 	// Create test command using helper
 	cmdPath := createTestCommand(t, "meta-remove-test", "Remove test")
 
-	// Add the command
-	_, err := runAimgr(t, "repo", "add", "--force", "local:"+cmdPath)
+	// Add from source root so repo remove source matching and orphan cleanup
+	// exercise supported source semantics.
+	sourcePath := filepath.Dir(filepath.Dir(cmdPath))
+	_, err := runAimgr(t, "repo", "add", "--force", "local:"+sourcePath)
 	if err != nil {
 		t.Fatalf("Failed to add command: %v", err)
 	}
@@ -600,7 +600,7 @@ func TestCLIMetadataDeletedOnRemove(t *testing.T) {
 	// Remove the source (which removes the command as an orphan)
 	// repo remove operates on sources, not individual resources
 	// The source was auto-named based on the directory path
-	removeOutput, err := runAimgr(t, "repo", "remove", cmdPath)
+	removeOutput, err := runAimgr(t, "repo", "remove", sourcePath)
 	if err != nil {
 		t.Fatalf("Failed to remove source: %v\nOutput: %s", err, removeOutput)
 	}

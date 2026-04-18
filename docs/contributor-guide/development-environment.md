@@ -118,13 +118,13 @@ Local setup stays close to CI, but CI still adds a few extra validations:
 |--------|--------------|---------------------|
 | Go Version | 1.25.6 | 1.25.6 |
 | CGO | Disabled (0) | Disabled (0) |
-| Baseline Checks | `make test` | `make vet` + `go test -race ./...` |
+| Baseline Checks | `make test` | `make vet` + `make unit-test` + `make integration-test` |
 | E2E | `make e2e-test` when needed | Separate `e2e-test` job |
 | Linter | `make vet` | `make vet` + `golangci-lint` |
 | Script validation | optional local spot-checks | `bash -n scripts/install.sh` + PowerShell parse for `scripts/install.ps1` |
 | Build | `make build` | `make build` + multi-platform build job |
 
-**Result**: Passing local checks reduces CI risk, but CI still adds race-test, lint, script-validation, and build-matrix coverage.
+**Result**: Passing local checks reduces CI risk, but CI still adds lint, script-validation, E2E, and build-matrix coverage.
 
 ## Troubleshooting
 
